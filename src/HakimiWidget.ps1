@@ -259,13 +259,13 @@ public static class HakimiHostFollower {
             if (title.Contains("Gemini Hakimi")) return true;
 
             bool match = false;
-            if (title.IndexOf("Antigravity", StringComparison.OrdinalIgnoreCase) >= 0) {
+            if (title.IndexOf("Antigravity", StringComparison.OrdinalIgnoreCase) >= 0 || title.IndexOf("反重力", StringComparison.OrdinalIgnoreCase) >= 0) {
                 match = true;
             } else {
                 try {
                     Process p = Process.GetProcessById((int)pid);
                     string pn = p.ProcessName;
-                    if (pn.Equals("Antigravity", StringComparison.OrdinalIgnoreCase)) {
+                    if (pn.IndexOf("Antigravity", StringComparison.OrdinalIgnoreCase) >= 0) {
                         match = true;
                     }
                 } catch {}
