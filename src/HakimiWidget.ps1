@@ -227,14 +227,27 @@ public static class HakimiHostFollower {
         return GetWindowRect(_detailHwnd, out rect);
     }
 
+    private static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
+    public const uint SWP_NOMOVE = 0x0002;
+    public const uint SWP_SHOWWINDOW = 0x0040;
+
+    public static void RestoreTopmost() {
+        if (_widgetHwnd != IntPtr.Zero && IsWindow(_widgetHwnd)) {
+            SetWindowPos(_widgetHwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        }
+        if (DetailVisible && _detailHwnd != IntPtr.Zero && IsWindow(_detailHwnd)) {
+            SetWindowPos(_detailHwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        }
+    }
+
     public static void MoveWidgetPhysical(int physX, int physY) {
         if (_widgetHwnd == IntPtr.Zero) return;
         LastWidgetX = physX;
         LastWidgetY = physY;
         HasValidPosition = true;
-        SetWindowPos(_widgetHwnd, IntPtr.Zero, physX, physY, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        SetWindowPos(_widgetHwnd, HWND_TOPMOST, physX, physY, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
         if (DetailVisible && _detailHwnd != IntPtr.Zero && IsWindow(_detailHwnd)) {
-            SetWindowPos(_detailHwnd, IntPtr.Zero, physX + DetailOffsetX, physY + DetailOffsetY, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            SetWindowPos(_detailHwnd, HWND_TOPMOST, physX + DetailOffsetX, physY + DetailOffsetY, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
         }
     }
 
@@ -259,7 +272,7 @@ public static class HakimiHostFollower {
             if (title.Contains("Gemini Hakimi")) return true;
 
             bool match = false;
-            if (title.IndexOf("Antigravity", StringComparison.OrdinalIgnoreCase) >= 0 || title.IndexOf("反重力", StringComparison.OrdinalIgnoreCase) >= 0) {
+            if (title.IndexOf("Antigrav", StringComparison.OrdinalIgnoreCase) >= 0 || title.IndexOf("反重力", StringComparison.OrdinalIgnoreCase) >= 0) {
                 match = true;
             } else {
                 try {
@@ -291,7 +304,7 @@ public static class HakimiHostFollower {
         _widgetHwnd = widgetHwnd;
         _detailHwnd = detailHwnd;
 
-        if (_targetHwnd != IntPtr.Zero && IsWindow(_targetHwnd) && IsWindowVisible(_targetHwnd) && !IsIconic(_targetHwnd)) {
+        if (_targetHwnd != IntPtr.Zero && IsWindow(_targetHwnd)) {
             return true;
         }
 
@@ -541,11 +554,16 @@ function Play-HakimiSound([string]$type) {
         [HakimiAudioPlayer]::PlayRelease()
         return
     }
+    # 轮次完成、缓存命中与结算扣费音效严格受 cache_sound_enabled 开关控制
+    if ($type -in @("cost", "task", "chime", "coin") -and !$Config.cache_sound_enabled) {
+        return
+    }
     $soundMap = @{
-        "pet"  = "press.wav"
-        "cost" = "cost-default.wav"
-        "task" = "task-end-a.wav"
-        "warn" = "Ya1.mp3"
+        "pet"   = "press.wav"
+        "cost"  = "cost-default.wav"
+        "task"  = "task-end-a.wav"
+        "chime" = "chime.wav"
+        "warn"  = "Ya1.mp3"
     }
     $file = $soundMap[$type]
     if (!$file) { $file = "press.wav" }
@@ -1842,7 +1860,7 @@ $animTimer.Add_Tick({
                     $newHwnd = [HakimiHostFollower]::FindAntigravityWindow($state.SelfPid)
                     if ($newHwnd -eq [IntPtr]::Zero) {
                         $state.HostMissingTicks++
-                        $threshold = if (!$isProcAlive) { 10 } else { 40 }
+                        $threshold = if (!$isProcAlive) { 6 } else { 15 }
                         if ($state.HostMissingTicks -ge $threshold) {
                             $window.Close()
                             return
@@ -1869,6 +1887,7 @@ $animTimer.Add_Tick({
                             if ($state.DetailWasOpen -and $detailWindow) {
                                 $detailWindow.Visibility = [System.Windows.Visibility]::Visible
                             }
+                            [HakimiHostFollower]::RestoreTopmost()
                             [HakimiHostFollower]::SyncNow()
                             Update-QuadrantLayout
                         }
@@ -1905,6 +1924,12 @@ $pollTimer.Add_Tick({
 })
 $pollTimer.Start()
 
+$app = [System.Windows.Application]::Current
+if ($null -eq $app) {
+    $app = New-Object System.Windows.Application
+}
+$app.ShutdownMode = [System.Windows.ShutdownMode]::OnExplicitShutdown
+
 # Cleanup on Exit
 $window.Add_Closed({
     [HakimiHostFollower]::Stop()
@@ -1916,10 +1941,12 @@ $window.Add_Closed({
     if (Test-Path $PidPath) {
         Remove-Item -LiteralPath $PidPath -Force -ErrorAction SilentlyContinue
     }
+    try { $app.Shutdown() } catch {}
 })
 
 try {
     Set-Content -LiteralPath $PidPath -Value $PID -Encoding Ascii -Force
 } catch {}
 
-[void]$window.ShowDialog()
+$window.Show()
+[void]$app.Run()

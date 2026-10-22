@@ -542,6 +542,57 @@ def start_desktop_pet():
         return False
 
 
+
+def has_antigravity_window():
+    try:
+        hdesk = ctypes.windll.user32.OpenDesktopW("Default", 0, False, 0x10000000)
+        if not hdesk:
+            hdesk = ctypes.windll.user32.OpenInputDesktop(0, False, 0x10000000)
+        if not hdesk:
+            return False
+
+        found = [False]
+        WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
+
+        def cb(hwnd, _):
+            try:
+                if not ctypes.windll.user32.IsWindow(hwnd):
+                    return True
+                length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+                if length > 0:
+                    buf = ctypes.create_unicode_buffer(length + 1)
+                    ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
+                    title = buf.value
+                    if "Gemini Hakimi" not in title and ("antigrav" in title.lower() or "反重力" in title):
+                        found[0] = True
+                        return False
+            except Exception:
+                pass
+            return True
+
+        ctypes.windll.user32.EnumDesktopWindows(hdesk, WNDENUMPROC(cb), 0)
+        ctypes.windll.user32.CloseDesktop(hdesk)
+        return found[0]
+    except Exception:
+        return False
+
+
+def _companion_watcher_loop():
+    r"""Background watcher that automatically launches the desktop pet on WinSta0\Default
+    when Antigravity window is opened or reopened."""
+    while True:
+        try:
+            time.sleep(2.0)
+            cfg = get_config()
+            if not cfg.get("auto_launch_desktop_pet"):
+                continue
+            if not is_desktop_pet_running():
+                if has_antigravity_window():
+                    print("[HakimiCompanion] Antigravity window detected on Default desktop, starting desktop pet...", flush=True)
+                    start_desktop_pet()
+        except Exception:
+            pass
+
 def stop_desktop_pet():
     global DESKTOP_PET_PROC
     if DESKTOP_PET_PROC is not None:
@@ -1032,6 +1083,9 @@ def main():
     cfg = get_config()
     if cfg.get("auto_launch_desktop_pet"):
         start_desktop_pet()
+
+    # Start companion auto-revive watcher loop
+    threading.Thread(target=_companion_watcher_loop, daemon=True).start()
 
     server = ThreadingHTTPServer(("127.0.0.1", port), HakimiSidecarHandler)
     write_server_info(port)

@@ -104,3 +104,11 @@
     - 桌宠右键菜单：`🙈 伴随 Antigravity 最小化隐藏与关闭联动`
     - 内置侧边栏 WebUI：`🙈 伴随最小化隐藏与退出` 复选框
     - 系统托盘图标支持右键呼出菜单与左键唤醒隐藏状态下的桌宠。
+
+### # 7. 轮次完成提示音彻底独立静音与关闭再开自启闭环 (v2.5)
+- **轮次提示音独立开关修复**：
+  - 排查发现 `sidecars/hakimi_panel/ui.html` 在每轮对话结束（`lastSeenStepIndex` 增长）时无条件执行了 `playSound('chime')`，且在 `playSound` 过滤条件中仅检查了 `['task', 'cost']` 而遗漏了 `chime`。导致用户在保留“摸头音效”而关闭“轮次提示音”时，每轮仍会收到响铃打扰。
+  - 修复后：在 `ui.html` 与 [`src/HakimiWidget.ps1`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/HakimiWidget.ps1) 中将所有自动提示音（`chime`, `task`, `cost`, `coin`）完全受控于 `cache_sound_enabled`，摸头音效仅响应用户主动 Rua 头的 `press`/`release`。
+- **关闭再开自启闭环 (Companion Auto-Revive)**：
+  - **伴随退出更迅速**：在 `HakimiWidget.ps1` 中将宿主关闭判定容错时间缩短至 750ms / 300ms，宿主窗口关闭后桌宠快速随同退出。
+  - **伴随再开自动拉起**：在 [`sidecars/hakimi_panel/server.py`](file:///e:/Antigravity/Gemini-Hakimi-Widget/sidecars/hakimi_panel/server.py) 中新增后台宿主伴随守护线程 `_companion_watcher_loop`，当用户重新打开 Antigravity 时，守护线程检测到 Antigravity 窗口打开且桌宠未在运行时，自动跨桌面在 `WinSta0\Default` 重新拉起桌宠，彻底形成“打开自启 -> 最小化隐形 -> 还原复位 -> 关闭退出 -> 再开重连”的全生命周期伴随闭环！

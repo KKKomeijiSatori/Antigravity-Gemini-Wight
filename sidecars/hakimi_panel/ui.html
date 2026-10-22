@@ -707,10 +707,11 @@
 
     function playSound(name) {
       if (!currentConfig.sound_enabled) return;
-      if ((name === 'task' || name === 'cost') && !currentConfig.cache_sound_enabled) return;
+      // 摸头音效为 press / release；轮次与缓存结算音效 (chime, task, cost, coin) 严格受 cache_sound_enabled 开关控制
+      if (['chime', 'task', 'cost', 'coin'].includes(name) && !currentConfig.cache_sound_enabled) return;
       try {
         const audio = new Audio(withAuth(`/assets/sounds/${name}.wav`));
-        audio.volume = 0.75;
+        audio.volume = currentConfig.sound_volume || 0.75;
         audio.play().catch(() => {});
       } catch (e) {}
     }
@@ -931,7 +932,9 @@
       // Detect new turn for automatic voice/bubble reaction
       if (lastSeenStepIndex !== null && lt.step_index > lastSeenStepIndex) {
         triggerBounce();
-        playSound('chime');
+        if (currentConfig.cache_sound_enabled) {
+          playSound('chime');
+        }
         if ((lt.cache_hit_rate || 0) >= 70 && quotesData.cache_hit && quotesData.cache_hit.length > 0) {
           const tpl = quotesData.cache_hit[Math.floor(Math.random() * quotesData.cache_hit.length)];
           setBubble(tpl.replace('{cache_rate}', lt.cache_hit_rate));
