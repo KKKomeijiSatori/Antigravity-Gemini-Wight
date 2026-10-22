@@ -832,13 +832,15 @@ $state = @{
 }
 
 function Show-BubbleQuote([string]$text, [string]$sub = "", [int]$durationSec = 4) {
-    if (!$Config.speech_bubble_enabled) { return }
+    if ([string]::IsNullOrEmpty($text)) { return }
     $BubbleText.Text = $text
     if ($sub) {
         $BubbleSubText.Text = $sub
     } else {
         $BubbleSubText.Text = "单击切回额度 · 单击两次关气泡 · 双击看详情"
     }
+    $Bubble.Opacity = 1.0
+    $Bubble.IsHitTestVisible = $true
     $QuotaViewGrid.Opacity = 0.0
     $QuotaViewGrid.IsHitTestVisible = $false
     $QuoteViewGrid.Opacity = 1.0
@@ -852,6 +854,10 @@ function Show-BubbleQuotaView {
     $QuotaViewGrid.Opacity = 1.0
     $QuotaViewGrid.IsHitTestVisible = $true
     $state.QuoteRevertTime = [datetime]::MinValue
+    if (!$Config.speech_bubble_enabled) {
+        $Bubble.Opacity = 0.0
+        $Bubble.IsHitTestVisible = $false
+    }
 }
 
 # Adaptive Quadrant Layout Engine (100% Physical Pixels — Never touches $window.Left / $window.Top!)
@@ -1478,9 +1484,11 @@ $MascotContainer.Add_MouseLeftButtonUp({
                 $state.LastMascotClickTick = $nowMs
                 $state.PetCount += 1
                 $HeartText.Text = "♥ 摸头 +$($state.PetCount)"
-                if ($Config.speech_bubble_enabled) {
-                    $qList = $Quotes.headpat
-                    $q = $qList[(Get-Random -Maximum $qList.Count)]
+                $qPool = @()
+                if ($Quotes.pet) { $qPool += $Quotes.pet }
+                if ($Quotes.idle) { $qPool += $Quotes.idle }
+                if ($qPool.Count -gt 0) {
+                    $q = $qPool[(Get-Random -Maximum $qPool.Count)]
                     Show-BubbleQuote $q ("摸摸头 x$($state.PetCount) · 单击两次关气泡 · 双击看详情") 4
                 }
             }

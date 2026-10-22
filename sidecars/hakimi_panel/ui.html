@@ -763,7 +763,7 @@
       spawnHeart(e);
       playSound('press'); setTimeout(() => playSound('release'), 260);
 
-      const pool = quotesData.pet || [];
+      const pool = [...(quotesData.pet || []), ...(quotesData.idle || [])];
       if (pool.length > 0) {
         const q = pool[Math.floor(Math.random() * pool.length)];
         setBubble(q);

@@ -105,10 +105,30 @@
     - 内置侧边栏 WebUI：`🙈 伴随最小化隐藏与退出` 复选框
     - 系统托盘图标支持右键呼出菜单与左键唤醒隐藏状态下的桌宠。
 
-### # 7. 轮次完成提示音彻底独立静音与关闭再开自启闭环 (v2.5)
+### 7. 轮次完成提示音彻底独立静音与关闭再开自启闭环 (v2.5)
 - **轮次提示音独立开关修复**：
   - 排查发现 `sidecars/hakimi_panel/ui.html` 在每轮对话结束（`lastSeenStepIndex` 增长）时无条件执行了 `playSound('chime')`，且在 `playSound` 过滤条件中仅检查了 `['task', 'cost']` 而遗漏了 `chime`。导致用户在保留“摸头音效”而关闭“轮次提示音”时，每轮仍会收到响铃打扰。
   - 修复后：在 `ui.html` 与 [`src/HakimiWidget.ps1`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/HakimiWidget.ps1) 中将所有自动提示音（`chime`, `task`, `cost`, `coin`）完全受控于 `cache_sound_enabled`，摸头音效仅响应用户主动 Rua 头的 `press`/`release`。
 - **关闭再开自启闭环 (Companion Auto-Revive)**：
   - **伴随退出更迅速**：在 `HakimiWidget.ps1` 中将宿主关闭判定容错时间缩短至 750ms / 300ms，宿主窗口关闭后桌宠快速随同退出。
   - **伴随再开自动拉起**：在 [`sidecars/hakimi_panel/server.py`](file:///e:/Antigravity/Gemini-Hakimi-Widget/sidecars/hakimi_panel/server.py) 中新增后台宿主伴随守护线程 `_companion_watcher_loop`，当用户重新打开 Antigravity 时，守护线程检测到 Antigravity 窗口打开且桌宠未在运行时，自动跨桌面在 `WinSta0\Default` 重新拉起桌宠，彻底形成“打开自启 -> 最小化隐形 -> 还原复位 -> 关闭退出 -> 再开重连”的全生命周期伴随闭环！
+
+
+### 8. 伴随生命周期与 Win32 状态机隔离升级 (v2.6)
+- **最小化与关闭状态混淆根治**：
+  - 排查发现 Win32 中最小化（`IsIconic(hwnd)`）仍保持窗口可见性，而 Electron 窗口关闭时会先执行 `ShowWindow(SW_HIDE)`（使 `IsWindowVisible == 0` 但 `IsIconic == 0`）。旧版代码将非可见窗口误判为最小化，导致窗口关闭时桌宠误陷入“睡眠折叠”等待还原状态。
+  - 重构后严格区分状态机：`IsHostMinimized()` 仅在 `IsIconic` 时判定；`IsHostWindowAlive()` 必须满足 `IsWindowVisible || IsIconic`。宿主关闭后 500ms 内确定性退出。
+  - 窗口标题模糊匹配增强：通过 `IndexOf("Antigrav", ...)` 兼容带前缀或被截断的窗口标题（如 `Antigrav...`）。
+  - 用户手动退出标志（`USER_MANUALLY_STOPPED`）：区分用户在 UI 上的主动关闭操作，避免误自动重新唤醒，直到下一次 Antigravity 会话重启。
+
+### 9. 台词哈基米更名为 Gemini、专属定制台词与摸头台词池修复 (v2.7)
+- **台词库全量更新**：
+  - 在 [`assets/quotes.json`](file:///e:/Antigravity/Gemini-Hakimi-Widget/assets/quotes.json) 中将所有“哈基米”全部统一更名为“Gemini”。
+  - 新增定制专属台词：
+    - `"本猫有权对任何人哈气 哈！"`
+    - `"我将用最深邃的话告诉你极其极其极其极其极其极其"`
+  - 将定制台词同步纳入闲置（`idle`）与摸头互动（`pet`）台词库。
+- **摸头随机台词池修复**：
+  - 排查发现 [`src/HakimiWidget.ps1`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/HakimiWidget.ps1) 中原本引用了 `$Quotes.headpat`（而 JSON 中键名为 `pet`），导致摸头时台词池为空。
+  - 修复后将 `$Quotes.pet` 与 `$Quotes.idle` 联合并集构建随机池，每次摸头点击均能 100% 随机触发台词气泡展示（持续 4 秒）。
+  - 同步更新内置 WebUI 面板（[`sidecars/hakimi_panel/ui.html`](file:///e:/Antigravity/Gemini-Hakimi-Widget/sidecars/hakimi_panel/ui.html)）摸头点击台词池。
