@@ -543,6 +543,24 @@ def start_desktop_pet():
 
 
 
+USER_MANUALLY_STOPPED = False
+
+
+def _is_antigravity_process(pid):
+    try:
+        hProc = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+        if hProc:
+            buf = ctypes.create_unicode_buffer(512)
+            size = ctypes.wintypes.DWORD(512)
+            ctypes.windll.kernel32.QueryFullProcessImageNameW(hProc, 0, buf, ctypes.byref(size))
+            ctypes.windll.kernel32.CloseHandle(hProc)
+            name = os.path.basename(buf.value).lower()
+            return "antigravity" in name
+    except Exception:
+        pass
+    return False
+
+
 def has_antigravity_window():
     try:
         hdesk = ctypes.windll.user32.OpenDesktopW("Default", 0, False, 0x10000000)
@@ -558,14 +576,30 @@ def has_antigravity_window():
             try:
                 if not ctypes.windll.user32.IsWindow(hwnd):
                     return True
+                is_vis = ctypes.windll.user32.IsWindowVisible(hwnd)
+                is_ico = ctypes.windll.user32.IsIconic(hwnd)
+                if not (is_vis or is_ico):
+                    return True
+
                 length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
                 if length > 0:
                     buf = ctypes.create_unicode_buffer(length + 1)
                     ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
                     title = buf.value
-                    if "Gemini Hakimi" not in title and ("antigrav" in title.lower() or "反重力" in title):
-                        found[0] = True
-                        return False
+                    if "Gemini Hakimi" not in title:
+                        if "antigrav" in title.lower() or "反重力" in title:
+                            found[0] = True
+                            return False
+                        pid = ctypes.wintypes.DWORD()
+                        ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                        if pid.value > 0 and _is_antigravity_process(pid.value):
+                            rect = (ctypes.c_int * 4)()
+                            ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                            w = rect[2] - rect[0]
+                            h = rect[3] - rect[1]
+                            if (w >= 300 and h >= 200) or is_ico:
+                                found[0] = True
+                                return False
             except Exception:
                 pass
             return True
@@ -578,18 +612,22 @@ def has_antigravity_window():
 
 
 def _companion_watcher_loop():
-    r"""Background watcher that automatically launches the desktop pet on WinSta0\Default
-    when Antigravity window is opened or reopened."""
+    r"""Background companion watcher that manages automatic desktop pet life-cycle."""
+    global USER_MANUALLY_STOPPED
     while True:
         try:
-            time.sleep(2.0)
-            cfg = get_config()
-            if not cfg.get("auto_launch_desktop_pet"):
-                continue
-            if not is_desktop_pet_running():
-                if has_antigravity_window():
-                    print("[HakimiCompanion] Antigravity window detected on Default desktop, starting desktop pet...", flush=True)
-                    start_desktop_pet()
+            time.sleep(1.5)
+            has_host = has_antigravity_window()
+            if not has_host:
+                # Host closed -> Reset manual stop so it auto-launches on next Antigravity start!
+                USER_MANUALLY_STOPPED = False
+            else:
+                cfg = get_config()
+                # If either auto-launch or companion follow is enabled
+                if cfg.get("auto_launch_desktop_pet") or cfg.get("hide_with_antigravity"):
+                    if not is_desktop_pet_running() and not USER_MANUALLY_STOPPED:
+                        print("[HakimiCompanion] Antigravity window active, auto-launching desktop pet on WinSta0\\Default...", flush=True)
+                        start_desktop_pet()
         except Exception:
             pass
 
@@ -1030,12 +1068,15 @@ class HakimiSidecarHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/desktop-pet":
+            global USER_MANUALLY_STOPPED
             action = payload.get("action", "toggle")
             running = is_desktop_pet_running()
-            if action == "start" or (action == "toggle" and not running):
-                now_running = start_desktop_pet()
-            else:
+            if action == "manual_exit" or action == "stop" or (action == "toggle" and running):
+                USER_MANUALLY_STOPPED = True
                 now_running = stop_desktop_pet()
+            else:
+                USER_MANUALLY_STOPPED = False
+                now_running = start_desktop_pet()
             self.send_response(200)
             self._send_cors()
             self.send_header("Content-Type", "application/json; charset=utf-8")

@@ -351,13 +351,13 @@ public static class HakimiHostFollower {
     }
 
     public static bool IsHostWindowAlive() {
-        if (_targetHwnd == IntPtr.Zero) return false;
-        return IsWindow(_targetHwnd);
+        if (_targetHwnd == IntPtr.Zero || !IsWindow(_targetHwnd)) return false;
+        return IsWindowVisible(_targetHwnd) || IsIconic(_targetHwnd);
     }
 
-    public static bool IsHostMinimizedOrHidden() {
+    public static bool IsHostMinimized() {
         if (_targetHwnd == IntPtr.Zero || !IsWindow(_targetHwnd)) return false;
-        return IsIconic(_targetHwnd) || !IsWindowVisible(_targetHwnd);
+        return IsIconic(_targetHwnd);
     }
 
     public static bool IsHostProcessAlive() {
@@ -1740,7 +1740,12 @@ function Rebuild-ContextMenu {
 
     $miExit = [System.Windows.Controls.MenuItem]::new()
     $miExit.Header = "❌ 退出哈基米桌宠"
-    $miExit.Add_Click({ $window.Close() })
+    $miExit.Add_Click({
+        try {
+            Invoke-RestMethod -Uri "http://127.0.0.1:54716/api/desktop-pet" -Method Post -Body '{"action":"manual_exit"}' -ContentType "application/json" -TimeoutSec 1 | Out-Null
+        } catch {}
+        $window.Close()
+    })
     $contextMenu.Items.Add($miExit) | Out-Null
 }
 
@@ -1860,7 +1865,7 @@ $animTimer.Add_Tick({
                     $newHwnd = [HakimiHostFollower]::FindAntigravityWindow($state.SelfPid)
                     if ($newHwnd -eq [IntPtr]::Zero) {
                         $state.HostMissingTicks++
-                        $threshold = if (!$isProcAlive) { 6 } else { 15 }
+                        $threshold = if (!$isProcAlive) { 5 } else { 12 }
                         if ($state.HostMissingTicks -ge $threshold) {
                             $window.Close()
                             return
@@ -1870,7 +1875,7 @@ $animTimer.Add_Tick({
                     }
                 } else {
                     $state.HostMissingTicks = 0
-                    $isMin = [HakimiHostFollower]::IsHostMinimizedOrHidden()
+                    $isMin = [HakimiHostFollower]::IsHostMinimized()
                     if ($isMin) {
                         if (!$state.HostHiddenState) {
                             $state.HostHiddenState = $true
