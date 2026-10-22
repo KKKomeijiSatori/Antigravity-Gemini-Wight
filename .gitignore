@@ -1,17 +1,22 @@
-# 运行时与开发过程中的产物，不应入库
-.mimosa/
-node_modules/
+# System & runtime caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Runtime pid & socket bridge
+*.pid
+config/pet.pid
+config/ls_bridge.json
 *.log
 
-# 本机数据目录（配置、账本、Electron 运行时）不在这里，但以防有人拷贝进来
-desktop-runtime/
-
-# 宿主 agent 在本目录工作时留下的本地状态（WorkBuddy 的项目记忆、ZCode 的临时产物）
-.workbuddy/
-.zcode/
-
-# 编辑器 / 系统
-.DS_Store
+# Windows thumbnail & desktop caches
 Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# IDE & workspace files
 .idea/
 .vscode/
+*.swp
+*.bak

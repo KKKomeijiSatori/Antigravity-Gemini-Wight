@@ -1,0 +1,21 @@
+{
+  "scale": 1.0,
+  "sound_volume": 0.8,
+  "follow_antigravity": true,
+  "active_model": "gemini-4-argon",
+  "opacity": 1.0,
+  "click_through": false,
+  "gemini_api_key": "",
+  "corner_offset_x": -438,
+  "corner_offset_y": -438,
+  "position_x": 1322,
+  "position_y": 642,
+  "speech_bubble_enabled": true,
+  "anchor_corner": 0,
+  "antigravity_brain_path": "C:\\Users\\atri\\.gemini\\antigravity\\brain",
+  "sound_enabled": true,
+  "topmost": true,
+  "auto_launch_desktop_pet": true,
+  "active_plan": "free",
+  "cache_sound_enabled": false
+}
