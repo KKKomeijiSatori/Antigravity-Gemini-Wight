@@ -520,6 +520,10 @@
         <input type="checkbox" id="chkAutoDesktopPet" onchange="onToggleAutoDesktopPet()">
         <span>伴随弹出桌面悬浮宠物</span>
       </label>
+      <label title="在开启吸附后，当 Antigravity 窗口最小化时桌宠伴随隐藏，关闭时桌宠同步退出" style="margin-left: 14px;">
+        <input type="checkbox" id="chkHideWithHost" onchange="onToggleHideWithHost()">
+        <span>🙈 伴随最小化隐藏与退出</span>
+      </label>
       <label title="开启后，高命中 Prompt 缓存或轮次计费完成时播放提示音（默认静音免打扰）" style="margin-left: 14px;">
         <input type="checkbox" id="chkCacheSound" onchange="onToggleCacheSound()">
         <span>🔔 缓存/轮次提示音</span>
@@ -847,6 +851,10 @@
       }
 
       document.getElementById('chkAutoDesktopPet').checked = !!currentConfig.auto_launch_desktop_pet;
+      const chkHide = document.getElementById('chkHideWithHost');
+      if (chkHide && currentConfig.hide_with_antigravity !== undefined) {
+        chkHide.checked = !!currentConfig.hide_with_antigravity;
+      }
       const chkCache = document.getElementById('chkCacheSound');
       if (chkCache) chkCache.checked = !!currentConfig.cache_sound_enabled;
 
@@ -1015,6 +1023,14 @@
       playSound('pop');
       updateConfig({ auto_launch_desktop_pet: checked });
       setBubble(checked ? '已开启伴随启动桌面悬浮桌宠 🚀' : '已关闭伴随启动桌面悬浮桌宠');
+    }
+
+    function onToggleHideWithHost() {
+      const checked = document.getElementById('chkHideWithHost').checked;
+      playSound('pop');
+      currentConfig.hide_with_antigravity = checked;
+      updateConfig({ hide_with_antigravity: checked });
+      setBubble(checked ? '已开启伴随反重力最小化隐藏与关闭联动 🙈' : '已关闭伴随隐藏，桌宠将始终独立常驻桌面 🐾');
     }
 
     async function toggleDesktopPet() {

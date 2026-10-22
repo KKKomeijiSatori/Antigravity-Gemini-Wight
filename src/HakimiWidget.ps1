@@ -333,6 +333,30 @@ public static class HakimiHostFollower {
         return _targetHwnd;
     }
 
+    public static uint GetTargetPid() {
+        return _targetPid;
+    }
+
+    public static bool IsHostWindowAlive() {
+        if (_targetHwnd == IntPtr.Zero) return false;
+        return IsWindow(_targetHwnd);
+    }
+
+    public static bool IsHostMinimizedOrHidden() {
+        if (_targetHwnd == IntPtr.Zero || !IsWindow(_targetHwnd)) return false;
+        return IsIconic(_targetHwnd) || !IsWindowVisible(_targetHwnd);
+    }
+
+    public static bool IsHostProcessAlive() {
+        if (_targetPid == 0) return false;
+        try {
+            Process p = Process.GetProcessById((int)_targetPid);
+            return !p.HasExited;
+        } catch {
+            return false;
+        }
+    }
+
     public static void RecordAnchorFromCurrentPhysicalRect() {
         RECT r, wRect;
         if (!TryGetBounds(_targetHwnd, out r)) return;
@@ -432,6 +456,7 @@ $DefaultConfig = @{
     topmost = $true
     click_through = $false
     follow_antigravity = $true
+    hide_with_antigravity = $true
     active_model = "gemini-3.8-flash"
     active_plan = "free"
     antigravity_brain_path = Join-Path $env:USERPROFILE ".gemini\antigravity\brain"
@@ -782,6 +807,10 @@ $state = @{
     SelfPid = [uint32]$PID
     WindowHwnd = [IntPtr]::Zero
     DetailHwnd = [IntPtr]::Zero
+    HostHiddenState = $false
+    EverHookedHost = $false
+    HostMissingTicks = 0
+    DetailWasOpen = $false
 }
 
 function Show-BubbleQuote([string]$text, [string]$sub = "", [int]$durationSec = 4) {
@@ -1637,9 +1666,33 @@ function Rebuild-ContextMenu {
             Snap-MascotToNearestCorner $true
         } else {
             [HakimiHostFollower]::Stop()
+            if ($state.HostHiddenState) {
+                $state.HostHiddenState = $false
+                $window.Visibility = [System.Windows.Visibility]::Visible
+                if ($state.DetailWasOpen -and $detailWindow) {
+                    $detailWindow.Visibility = [System.Windows.Visibility]::Visible
+                }
+            }
         }
     })
     $contextMenu.Items.Add($miFollow) | Out-Null
+
+    $miHideWithHost = [System.Windows.Controls.MenuItem]::new()
+    $miHideWithHost.Header = "🙈 伴随 Antigravity 最小化隐藏与关闭联动"
+    $miHideWithHost.IsChecked = [bool]$Config.hide_with_antigravity
+    $miHideWithHost.IsEnabled = [bool]$Config.follow_antigravity
+    $miHideWithHost.Add_Click({
+        $Config.hide_with_antigravity = !$Config.hide_with_antigravity
+        Save-Config
+        if (!$Config.hide_with_antigravity -and $state.HostHiddenState) {
+            $state.HostHiddenState = $false
+            $window.Visibility = [System.Windows.Visibility]::Visible
+            if ($state.DetailWasOpen -and $detailWindow) {
+                $detailWindow.Visibility = [System.Windows.Visibility]::Visible
+            }
+        }
+    })
+    $contextMenu.Items.Add($miHideWithHost) | Out-Null
 
     $miSound = [System.Windows.Controls.MenuItem]::new()
     $miSound.Header = "🔊 开启大肥鱼摸头音效"
@@ -1700,9 +1753,13 @@ $notifyIcon.Add_MouseClick({
         if ($window.Visibility -eq [System.Windows.Visibility]::Visible) {
             Toggle-DetailWindow
         } else {
-            $window.Show()
+            $state.HostHiddenState = $false
+            $window.Visibility = [System.Windows.Visibility]::Visible
             $window.Activate() | Out-Null
         }
+    } elseif ($e.Button -eq [System.Windows.Forms.MouseButtons]::Right) {
+        Rebuild-ContextMenu
+        $contextMenu.IsOpen = $true
     }
 })
 
@@ -1771,10 +1828,66 @@ $animTimer.Add_Tick({
     }
 
     if ($Config.follow_antigravity -and !$state.IsDragging) {
-        [HakimiHostFollower]::EnsureHooked($state.WindowHwnd, $state.DetailHwnd, $state.SelfPid) | Out-Null
+        $hooked = [HakimiHostFollower]::EnsureHooked($state.WindowHwnd, $state.DetailHwnd, $state.SelfPid)
+        if ($hooked) {
+            $state.EverHookedHost = $true
+            $state.HostMissingTicks = 0
+        }
+
+        if ($Config.hide_with_antigravity -and $state.EverHookedHost) {
+            $tHwnd = [HakimiHostFollower]::GetTargetHwnd()
+            if ($tHwnd -ne [IntPtr]::Zero) {
+                if (![HakimiHostFollower]::IsHostWindowAlive()) {
+                    $isProcAlive = [HakimiHostFollower]::IsHostProcessAlive()
+                    $newHwnd = [HakimiHostFollower]::FindAntigravityWindow($state.SelfPid)
+                    if ($newHwnd -eq [IntPtr]::Zero) {
+                        $state.HostMissingTicks++
+                        $threshold = if (!$isProcAlive) { 10 } else { 40 }
+                        if ($state.HostMissingTicks -ge $threshold) {
+                            $window.Close()
+                            return
+                        }
+                    } else {
+                        $state.HostMissingTicks = 0
+                    }
+                } else {
+                    $state.HostMissingTicks = 0
+                    $isMin = [HakimiHostFollower]::IsHostMinimizedOrHidden()
+                    if ($isMin) {
+                        if (!$state.HostHiddenState) {
+                            $state.HostHiddenState = $true
+                            $state.DetailWasOpen = [bool]$state.DetailOpen
+                            $window.Visibility = [System.Windows.Visibility]::Collapsed
+                            if ($state.DetailOpen -and $detailWindow) {
+                                $detailWindow.Visibility = [System.Windows.Visibility]::Collapsed
+                            }
+                        }
+                    } else {
+                        if ($state.HostHiddenState) {
+                            $state.HostHiddenState = $false
+                            $window.Visibility = [System.Windows.Visibility]::Visible
+                            if ($state.DetailWasOpen -and $detailWindow) {
+                                $detailWindow.Visibility = [System.Windows.Visibility]::Visible
+                            }
+                            [HakimiHostFollower]::SyncNow()
+                            Update-QuadrantLayout
+                        }
+                    }
+                }
+            }
+        } elseif ($state.HostHiddenState) {
+            $state.HostHiddenState = $false
+            $window.Visibility = [System.Windows.Visibility]::Visible
+            if ($state.DetailWasOpen -and $detailWindow) {
+                $detailWindow.Visibility = [System.Windows.Visibility]::Visible
+            }
+        }
+
         if ([HakimiHostFollower]::MovedByHook) {
             [HakimiHostFollower]::MovedByHook = $false
-            Update-QuadrantLayout
+            if (!$state.HostHiddenState) {
+                Update-QuadrantLayout
+            }
         }
     }
     } catch {}

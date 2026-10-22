@@ -94,3 +94,13 @@
     - **松开 (MouseUp, 480ms)**：4 关键帧连续弹性多级回弹（拉伸过冲 `0.91, 1.13` -> 二级压缩 `1.055, 0.955` -> 微阻尼收敛 `0.986, 1.014` -> 完美静止 `1.0, 1.0`），全程由 WPF GPU 合成器渲染，丝滑无停顿。
   - **切模型防炸加固**：
     - 加固 [`sidecars/hakimi_panel/server.py`](file:///e:/Antigravity/Gemini-Hakimi-Widget/sidecars/hakimi_panel/server.py) 中的模型索引与默认定价表，当用户切换至 `Gemini 3.8 Flash` 等任意模型时，提供完整的默认回退兜底，杜绝 `KeyError`。
+
+### 6. 伴随 Antigravity 宿主窗口最小化隐藏与关闭联动 (v2.4)
+- **核心功能**：
+  - **伴随最小化隐藏**：当 Antigravity 主窗口最小化或按下 Win+D 显示桌面时，桌宠主窗口与详情面板自动无感隐藏（`Visibility = Collapsed`），不遮挡桌面。
+  - **伴随还原无缝复位**：当用户从任务栏还原或点击 Antigravity 窗口时，桌宠立即同步重现，并通过 0ms `SyncNow()` 精确复位到 Antigravity 吸附角，无缝贴合。
+  - **伴随关闭自动退出**：当 Antigravity 窗口关闭或主进程退出后，桌宠自动识别宿主销毁事件，在短暂确认后优雅退出并清理所有钩子与 PID 锁文件。
+  - **全端开关与托盘增强**：
+    - 桌宠右键菜单：`🙈 伴随 Antigravity 最小化隐藏与关闭联动`
+    - 内置侧边栏 WebUI：`🙈 伴随最小化隐藏与退出` 复选框
+    - 系统托盘图标支持右键呼出菜单与左键唤醒隐藏状态下的桌宠。

@@ -77,7 +77,8 @@ def get_config():
         "speech_bubble_enabled": True,
         "topmost": True,
         "click_through": False,
-        "follow_antigravity": False,
+        "follow_antigravity": True,
+        "hide_with_antigravity": True,
         "auto_launch_desktop_pet": False,
         "active_model": "gemini-3.8-flash",
         "active_plan": "free",
@@ -798,7 +799,9 @@ def collect_stats(requested_conv_id=None):
             "sound_enabled": bool(cfg.get("sound_enabled", True)),
             "cache_sound_enabled": bool(cfg.get("cache_sound_enabled", False)),
             "speech_bubble_enabled": bool(cfg.get("speech_bubble_enabled", True)),
-            "auto_launch_desktop_pet": bool(cfg.get("auto_launch_desktop_pet", False))
+            "auto_launch_desktop_pet": bool(cfg.get("auto_launch_desktop_pet", False)),
+            "follow_antigravity": bool(cfg.get("follow_antigravity", True)),
+            "hide_with_antigravity": bool(cfg.get("hide_with_antigravity", True))
         },
         "models": models_list,
         "desktop_pet_running": is_desktop_pet_running(),
@@ -964,7 +967,7 @@ class HakimiSidecarHandler(BaseHTTPRequestHandler):
 
         if path == "/api/config":
             cfg = get_config()
-            for k in ("active_model", "active_plan", "sound_enabled", "cache_sound_enabled", "speech_bubble_enabled", "auto_launch_desktop_pet"):
+            for k in ("active_model", "active_plan", "sound_enabled", "cache_sound_enabled", "speech_bubble_enabled", "auto_launch_desktop_pet", "follow_antigravity", "hide_with_antigravity"):
                 if k in payload:
                     cfg[k] = payload[k]
             save_json(CONFIG_PATH, cfg)
