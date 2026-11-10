@@ -569,6 +569,17 @@
       </div>
     </div>
 
+    <!-- TPS -->
+    <div class="meter-group">
+      <div class="meter-header">
+        <span class="meter-label">TPS (每秒 Token 速率)</span>
+        <span class="meter-val" id="txtTPS" style="color:var(--pink)">0 / 16.7k</span>
+      </div>
+      <div class="progress-track">
+        <div class="progress-fill" id="barTPS" style="width:0%;background:linear-gradient(90deg, var(--pink), var(--purple));"></div>
+      </div>
+    </div>
+
     <!-- Context Window -->
     <div class="meter-group">
       <div class="meter-header">
@@ -792,6 +803,7 @@
       const v = Number(n || 0);
       if (v >= 1000000) return (v / 1000000).toFixed(2) + 'M';
       if (v >= 1000) return (v / 1000).toFixed(1) + 'k';
+      if (v % 1 !== 0) return v.toFixed(1);
       return String(v);
     }
 
@@ -911,6 +923,10 @@
       const tpmPct = Math.min(100, ((rl.current_tpm || 0) / Math.max(1, rl.max_tpm || 1000000)) * 100);
       document.getElementById('txtTPM').innerText = `${formatK(rl.current_tpm)} / ${formatK(rl.max_tpm)}`;
       document.getElementById('barTPM').style.width = `${tpmPct}%`;
+
+      const tpsPct = Math.min(100, ((rl.current_tps || 0) / Math.max(1, rl.max_tps || 16666.7)) * 100);
+      document.getElementById('txtTPS').innerText = `${formatK(rl.current_tps || 0)} / ${formatK(rl.max_tps || 16666.7)}`;
+      document.getElementById('barTPS').style.width = `${tpsPct}%`;
 
       const ctxPct = Math.min(100, s.context_pct || 0);
       document.getElementById('ctxWindowLabel').innerText = `${formatK(rl.context_window)} 上下文`;

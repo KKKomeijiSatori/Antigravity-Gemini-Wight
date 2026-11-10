@@ -929,6 +929,8 @@ def collect_stats(requested_conv_id=None):
             "max_rpm": int(limits_cfg.get("rpm", 15)),
             "current_tpm": tpm_tokens,
             "max_tpm": int(limits_cfg.get("tpm", 1000000)),
+            "current_tps": round(tpm_tokens / 60.0, 1),
+            "max_tps": round(int(limits_cfg.get("tpm", 1000000)) / 60.0, 1),
             "current_rpd": t_turns,
             "max_rpd": int(limits_cfg.get("rpd", 1500)),
             "context_window": ctx_window,

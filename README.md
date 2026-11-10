@@ -6,7 +6,7 @@
   <p>
     <a href="https://github.com/KKKomeijiSatori/Antigravity-Gemini-Wight"><img src="https://img.shields.io/badge/GitHub-Antigravity--Gemini--Wight-blue?logo=github" alt="GitHub Repo"></a>
     <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT"></a>
-    <img src="https://img.shields.io/badge/version-2.3-pink.svg" alt="Version 2.3">
+    <img src="https://img.shields.io/badge/version-2.8-pink.svg" alt="Version 2.8">
     <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Antigravity-purple.svg" alt="Platform: Windows / Antigravity">
     <img src="https://img.shields.io/badge/RPC-LanguageServer%20Live-emerald.svg" alt="ConnectRPC Live">
   </p>

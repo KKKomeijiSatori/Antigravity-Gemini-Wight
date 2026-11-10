@@ -132,3 +132,10 @@
   - 排查发现 [`src/HakimiWidget.ps1`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/HakimiWidget.ps1) 中原本引用了 `$Quotes.headpat`（而 JSON 中键名为 `pet`），导致摸头时台词池为空。
   - 修复后将 `$Quotes.pet` 与 `$Quotes.idle` 联合并集构建随机池，每次摸头点击均能 100% 随机触发台词气泡展示（持续 4 秒）。
   - 同步更新内置 WebUI 面板（[`sidecars/hakimi_panel/ui.html`](file:///e:/Antigravity/Gemini-Hakimi-Widget/sidecars/hakimi_panel/ui.html)）摸头点击台词池。
+
+### 10. 速率监控全新接入 TPS (Tokens Per Second) 实时吞吐指标 (v2.8)
+- **多端速率监控指标升级**：
+  - 在 Sidecar 服务层（[`sidecars/hakimi_panel/server.py`](file:///e:/Antigravity/Gemini-Hakimi-Widget/sidecars/hakimi_panel/server.py)）与桌面监控层（[`src/AntigravityMonitor.ps1`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/AntigravityMonitor.ps1)）中新增 `current_tps` 与 `max_tps` 指标计算（基于 60s 滑动窗口平滑折算，严格对应 TPM 与层级限额）。
+  - **内置 WebUI 面板**（[`sidecars/hakimi_panel/ui.html`](file:///e:/Antigravity/Gemini-Hakimi-Widget/sidecars/hakimi_panel/ui.html)）：在“⚡ 实时速率与上下文限额”卡片中新增 **TPS (每秒 Token 速率)** 独立进度条与数值显示（采用亮粉-紫霓虹渐变），支持动态 K/M 单位自适应。
+  - **桌面悬浮挂件**（[`src/HakimiWidget.ps1`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/HakimiWidget.ps1)）：将详情窗口的第二区域扩展为 4 列自适应网格（`RPM 每分请求` / `TPM 每分Token` / `TPS 每秒Token` / `上下文占比`），保持 352px 紧凑美观与高信息密度。
+

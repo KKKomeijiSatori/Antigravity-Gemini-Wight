@@ -688,25 +688,30 @@ $MenuFacingScale = $window.FindName("MenuFacingScale")
                 </StackPanel>
             </Border>
 
-            <!-- Section 2: Real-Time RPM / TPM / Context Window -->
-            <Border Background="#14FFFFFF" CornerRadius="10" Padding="9,6" Margin="0,0,0,8">
+            <!-- Section 2: Real-Time RPM / TPM / TPS / Context Window -->
+            <Border Background="#14FFFFFF" CornerRadius="10" Padding="8,6" Margin="0,0,0,8">
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
-                    <StackPanel Grid.Column="0" Margin="0,0,4,0">
-                        <TextBlock Text="RPM (每分请求)" Foreground="#94A3B8" FontSize="9.5"/>
-                        <TextBlock x:Name="DetailRpmText" Text="0 / 15" Foreground="#E2E8F0" FontSize="11" FontWeight="Bold" Margin="0,1,0,0"/>
+                    <StackPanel Grid.Column="0" Margin="0,0,2,0">
+                        <TextBlock Text="RPM (每分请求)" Foreground="#94A3B8" FontSize="9"/>
+                        <TextBlock x:Name="DetailRpmText" Text="0 / 15" Foreground="#E2E8F0" FontSize="10.5" FontWeight="Bold" Margin="0,1,0,0"/>
                     </StackPanel>
                     <StackPanel Grid.Column="1" Margin="2,0,2,0">
-                        <TextBlock Text="TPM (每分Token)" Foreground="#94A3B8" FontSize="9.5"/>
-                        <TextBlock x:Name="DetailTpmText" Text="0 / 1.0M" Foreground="#E2E8F0" FontSize="11" FontWeight="Bold" Margin="0,1,0,0"/>
+                        <TextBlock Text="TPM (每分Token)" Foreground="#94A3B8" FontSize="9"/>
+                        <TextBlock x:Name="DetailTpmText" Text="0 / 1.0M" Foreground="#E2E8F0" FontSize="10.5" FontWeight="Bold" Margin="0,1,0,0"/>
                     </StackPanel>
-                    <StackPanel Grid.Column="2" Margin="4,0,0,0">
-                        <TextBlock Text="上下文窗口占比" Foreground="#94A3B8" FontSize="9.5"/>
-                        <TextBlock x:Name="DetailCtxText" Text="0.0% (1.0M)" Foreground="#E2E8F0" FontSize="11" FontWeight="Bold" Margin="0,1,0,0"/>
+                    <StackPanel Grid.Column="2" Margin="2,0,2,0">
+                        <TextBlock Text="TPS (每秒Token)" Foreground="#94A3B8" FontSize="9"/>
+                        <TextBlock x:Name="DetailTpsText" Text="0 / 16.7k" Foreground="#F472B6" FontSize="10.5" FontWeight="Bold" Margin="0,1,0,0"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="3" Margin="2,0,0,0">
+                        <TextBlock Text="上下文占比" Foreground="#94A3B8" FontSize="9"/>
+                        <TextBlock x:Name="DetailCtxText" Text="0.0% (1.0M)" Foreground="#E2E8F0" FontSize="10.5" FontWeight="Bold" Margin="0,1,0,0"/>
                     </StackPanel>
                 </Grid>
             </Border>
@@ -750,6 +755,7 @@ $DetailPlanBadge = $detailWindow.FindName("DetailPlanBadge")
 $ModelQuotaStack = $detailWindow.FindName("ModelQuotaStack")
 $DetailRpmText = $detailWindow.FindName("DetailRpmText")
 $DetailTpmText = $detailWindow.FindName("DetailTpmText")
+$DetailTpsText = $detailWindow.FindName("DetailTpsText")
 $DetailCtxText = $detailWindow.FindName("DetailCtxText")
 $DetailTurnText = $detailWindow.FindName("DetailTurnText")
 $DetailHitText = $detailWindow.FindName("DetailHitText")
@@ -789,10 +795,11 @@ function Set-BubbleVisible([bool]$visible) {
 }
 Set-BubbleVisible ([bool]$Config.speech_bubble_enabled)
 
-function Format-Tok([long]$n) {
+function Format-Tok([double]$n) {
     if ($n -ge 1000000) { return [string]::Format("{0:F2}M", $n / 1000000.0) }
     if ($n -ge 1000) { return [string]::Format("{0:F1}k", $n / 1000.0) }
-    return "$n"
+    if ($n % 1 -ne 0) { return [string]::Format("{0:F1}", $n) }
+    return [string]::Format("{0:F0}", $n)
 }
 
 function Get-QuotaColorBrush([int]$remainingPct, [bool]$isWeekly) {
@@ -1028,6 +1035,7 @@ function Update-UI {
     $DetailPlanBadge.Text = if ($Monitor.ActivePlan -eq "tier1") { "Tier 1 付费层 (5x限额)" } else { "Free 免费层" }
     $DetailRpmText.Text = "$($Monitor.RateLimits.CurrentRPM) / $($Monitor.RateLimits.MaxRPM)"
     $DetailTpmText.Text = "$(Format-Tok $Monitor.RateLimits.CurrentTPM) / $(Format-Tok $Monitor.RateLimits.MaxTPM)"
+    $DetailTpsText.Text = "$(Format-Tok $Monitor.RateLimits.CurrentTPS) / $(Format-Tok $Monitor.RateLimits.MaxTPS)"
     $DetailCtxText.Text = "$($Monitor.Session.ContextPct)% ($(Format-Tok $Monitor.Session.CurrentContext))"
 
     $DetailTurnText.Text = "本轮: In $(Format-Tok $Monitor.LastTurn.InputTokens) · Cache $(Format-Tok $Monitor.LastTurn.CacheReadTokens) · Out $(Format-Tok $Monitor.LastTurn.OutputTokens)"

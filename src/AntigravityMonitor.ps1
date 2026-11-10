@@ -88,6 +88,8 @@ class AntigravityMonitor {
         MaxRPM = 15
         CurrentTPM = 0L
         MaxTPM = 1000000L
+        CurrentTPS = 0.0
+        MaxTPS = 16666.7
         CurrentRPD = 0
         MaxRPD = 1500
         ContextWindow = 1048576L
@@ -203,6 +205,7 @@ class AntigravityMonitor {
         if ($limits) {
             $this.RateLimits.MaxRPM = [int]$limits.rpm
             $this.RateLimits.MaxTPM = [long]$limits.tpm
+            $this.RateLimits.MaxTPS = [Math]::Round([double]$limits.tpm / 60.0, 1)
             $this.RateLimits.MaxRPD = [int]$limits.rpd
         }
     }
@@ -850,6 +853,7 @@ class AntigravityMonitor {
             $tpm += [long]$r.Tokens
         }
         $this.RateLimits.CurrentTPM = $tpm
+        $this.RateLimits.CurrentTPS = [Math]::Round([double]$tpm / 60.0, 1)
 
         $tomorrow = $now.Date.AddDays(1)
         $diff = $tomorrow - $now
