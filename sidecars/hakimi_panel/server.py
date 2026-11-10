@@ -576,9 +576,15 @@ def has_antigravity_window():
             try:
                 if not ctypes.windll.user32.IsWindow(hwnd):
                     return True
-                is_vis = ctypes.windll.user32.IsWindowVisible(hwnd)
-                is_ico = ctypes.windll.user32.IsIconic(hwnd)
-                if not (is_vis or is_ico):
+
+                pid = ctypes.wintypes.DWORD()
+                ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                if pid.value <= 0 or not _is_antigravity_process(pid.value):
+                    return True
+
+                cls_buf = ctypes.create_unicode_buffer(128)
+                ctypes.windll.user32.GetClassNameW(hwnd, cls_buf, 128)
+                if cls_buf.value != "Chrome_WidgetWin_1":
                     return True
 
                 length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
@@ -586,20 +592,20 @@ def has_antigravity_window():
                     buf = ctypes.create_unicode_buffer(length + 1)
                     ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
                     title = buf.value
-                    if "Gemini Hakimi" not in title:
-                        if "antigrav" in title.lower() or "反重力" in title:
-                            found[0] = True
-                            return False
-                        pid = ctypes.wintypes.DWORD()
-                        ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-                        if pid.value > 0 and _is_antigravity_process(pid.value):
-                            rect = (ctypes.c_int * 4)()
-                            ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
-                            w = rect[2] - rect[0]
-                            h = rect[3] - rect[1]
-                            if (w >= 300 and h >= 200) or is_ico:
-                                found[0] = True
-                                return False
+                    if "Gemini Hakimi" in title:
+                        return True
+
+                    rect = (ctypes.c_int * 4)()
+                    ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                    w = rect[2] - rect[0]
+                    h = rect[3] - rect[1]
+                    is_vis = bool(ctypes.windll.user32.IsWindowVisible(hwnd))
+                    is_ico = bool(ctypes.windll.user32.IsIconic(hwnd))
+
+                    # Active window on screen or minimized in taskbar
+                    if (is_vis and w >= 400 and h >= 300) or is_ico or rect[0] <= -10000:
+                        found[0] = True
+                        return False
             except Exception:
                 pass
             return True

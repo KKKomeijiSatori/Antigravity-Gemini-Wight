@@ -139,3 +139,19 @@
   - **内置 WebUI 面板**（[`sidecars/hakimi_panel/ui.html`](file:///e:/Antigravity/Gemini-Hakimi-Widget/sidecars/hakimi_panel/ui.html)）：在“⚡ 实时速率与上下文限额”卡片中新增 **TPS (每秒 Token 速率)** 独立进度条与数值显示（采用亮粉-紫霓虹渐变），支持动态 K/M 单位自适应。
   - **桌面悬浮挂件**（[`src/HakimiWidget.ps1`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/HakimiWidget.ps1)）：将详情窗口的第二区域扩展为 4 列自适应网格（`RPM 每分请求` / `TPM 每分Token` / `TPS 每秒Token` / `上下文占比`），保持 352px 紧凑美观与高信息密度。
 
+### 11. 整体架构深度解耦重构与伴随生命周期彻底根治 (v3.0)
+- **根目录冗余脚手架脚本收敛**：
+  - 移除了根目录下与 `scripts/` 重复的 6 个历史遗留脚本（`Create-Desktop-Shortcut.ps1`, `Disable-AutoStart.bat`, `Enable-AutoStart.bat`, `Launch-Hakimi.vbs`, `Start-Widget.bat`, `Stop-Widget.bat`），统一收敛至 `scripts/` 目录，根目录保持规范纯粹。
+- **宿主窗口精准识别与误判彻底根治**：
+  - **根因发现**：此前宿主探测因使用粗粒度标题模糊匹配（`IndexOf("Antigrav")`），极易将打开了项目文件夹的 Windows 资源管理器 `explorer.exe`（标题带有 `Antigravity` 且后台窗口处于最小化）误判为 Antigravity 宿主，导致桌宠绑定错对象、拒绝跟随真实主窗口最小化或退出！
+  - **重构加固**：在 [`src/HakimiWidget.ps1`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/HakimiWidget.ps1) 与 [`sidecars/hakimi_panel/server.py`](file:///e:/Antigravity/Gemini-Hakimi-Widget/sidecars/hakimi_panel/server.py) 中，对宿主识别引入三级强校验：
+    1. 进程名称必须严格包含 `antigravity.exe`（排除 powershell / explorer / chrome 等）；
+    2. 窗口类名必须精准匹配 Electron 主窗口专用类名 `Chrome_WidgetWin_1`；
+    3. 过滤桌宠自身与空面积窗口。
+  - **伴随生命周期闭环**：
+    - 最小化判定：结合 Win32 `IsIconic(hwnd)` 与屏幕外坐标边界（`rect.Left <= -10000`），确保最小化或 Win+D 时桌宠 100% 同步隐藏；还原时立即复现并吸附复位。
+    - 退出判定：宿主窗口关闭或进程退出后 400ms 内，桌宠确定性自动调用 `$window.Close()` 优雅退出并释放资源。
+- **数据总线单一事实来源 (SSOT) 收敛**：
+  - 在 [`src/AntigravityMonitor.ps1`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/AntigravityMonitor.ps1) 中重构数据获取层：桌宠轮询优先通过本地 REST API（`http://127.0.0.1:54716/api/stats`）极速拉取 Sidecar 聚合数据，两端指标（Token、费用、5h/周配额、RPM/TPM/TPS）永久 100% 保持严格一致，同时避免重复扫描磁盘日志与重复进程端口探测。保留离线独立启动降级容灾能力。
+
+

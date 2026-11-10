@@ -98,6 +98,7 @@ class AntigravityMonitor {
 
     [System.Collections.Generic.List[hashtable]]$RecentRequests = [System.Collections.Generic.List[hashtable]]::new()
 
+    [bool]$SidecarOnline = $false
     [scriptblock]$OnTurnFinished = $null
 
     AntigravityMonitor([string]$brainPath, [string]$pricingPath, [string]$model, [string]$plan) {
@@ -529,7 +530,119 @@ class AntigravityMonitor {
         } catch {}
     }
 
+    [bool]SyncFromSidecar() {
+        try {
+            $url = "http://127.0.0.1:54716/api/stats"
+            $req = [System.Net.WebRequest]::CreateHttp($url)
+            $req.Timeout = 800
+            $req.Method = "GET"
+            $resp = $req.GetResponse()
+            $stream = $resp.GetResponseStream()
+            $reader = [System.IO.StreamReader]::new($stream, [System.Text.Encoding]::UTF8)
+            $jsonStr = $reader.ReadToEnd()
+            $reader.Dispose()
+            $stream.Dispose()
+            $resp.Dispose()
+
+            $data = $jsonStr | ConvertFrom-Json
+            if ($null -eq $data -or !$data.ok) { return $false }
+
+            # 1. Sync RateLimits (Single Source of Truth)
+            if ($data.rate_limits) {
+                $rl = $data.rate_limits
+                $this.RateLimits.CurrentRPM = [int]$rl.current_rpm
+                $this.RateLimits.MaxRPM = [int]$rl.max_rpm
+                $this.RateLimits.CurrentTPM = [long]$rl.current_tpm
+                $this.RateLimits.MaxTPM = [long]$rl.max_tpm
+                $this.RateLimits.CurrentTPS = [double]$rl.current_tps
+                $this.RateLimits.MaxTPS = [double]$rl.max_tps
+                $this.RateLimits.CurrentRPD = [int]$rl.current_rpd
+                $this.RateLimits.MaxRPD = [int]$rl.max_rpd
+                $this.RateLimits.ContextWindow = [long]$rl.context_window
+                $this.RateLimits.ResetCountdown = [string]$rl.reset_countdown
+            }
+
+            # 2. Sync LastTurn
+            if ($data.last_turn) {
+                $lt = $data.last_turn
+                $this.LastTurn.InputTokens = [long]$lt.input_tokens
+                $this.LastTurn.CacheReadTokens = [long]$lt.cache_read_tokens
+                $this.LastTurn.OutputTokens = [long]$lt.output_tokens
+                $this.LastTurn.TotalTokens = [long]$lt.total_tokens
+                $this.LastTurn.CacheHitRate = [double]$lt.cache_hit_rate
+                $this.LastTurn.CostUSD = [double]$lt.cost_usd
+                $this.LastTurn.CostCNY = [double]$lt.cost_cny
+                $this.LastTurn.SavingsUSD = [double]$lt.savings_usd
+                $this.LastTurn.SavingsCNY = [double]$lt.savings_cny
+            }
+
+            # 3. Sync Session
+            if ($data.session) {
+                $s = $data.session
+                $this.Session.Turns = [int]$s.turns
+                $this.Session.InputTokens = [long]$s.input_tokens
+                $this.Session.CacheReadTokens = [long]$s.cache_read_tokens
+                $this.Session.OutputTokens = [long]$s.output_tokens
+                $this.Session.TotalTokens = [long]$s.total_tokens
+                $this.Session.CurrentContext = [long]$s.current_context
+                $this.Session.ContextPct = [double]$s.context_pct
+                $this.Session.CostUSD = [double]$s.cost_usd
+                $this.Session.CostCNY = [double]$s.cost_cny
+                $this.Session.SavingsUSD = [double]$s.savings_usd
+                $this.Session.SavingsCNY = [double]$s.savings_cny
+            }
+
+            # 4. Sync Today
+            if ($data.today) {
+                $td = $data.today
+                $this.Today.Turns = [int]$td.turns
+                $this.Today.TotalTokens = [long]$td.total_tokens
+                $this.Today.CostCNY = [double]$td.cost_cny
+                $this.Today.CostUSD = [double]$td.cost_usd
+                $this.Today.SavingsCNY = [double]$td.savings_cny
+                $this.Today.SavingsUSD = [double]$td.savings_usd
+            }
+
+            # 5. Sync FiveHour & Weekly
+            if ($data.five_hour) {
+                $this.FiveHour.RemainingPct = [int]$data.five_hour.remaining_pct
+                $this.FiveHour.ResetDisplay = [string]$data.five_hour.reset_display
+            }
+            if ($data.weekly) {
+                $this.Weekly.RemainingPct = [int]$data.weekly.remaining_pct
+                $this.Weekly.ResetDisplay = [string]$data.weekly.reset_display
+            }
+
+            # 6. Sync ModelQuotas
+            if ($data.model_quotas) {
+                $this.ModelQuotas.Clear()
+                foreach ($mq in $data.model_quotas) {
+                    $this.ModelQuotas.Add(@{
+                        Id = [string]$mq.id
+                        Name = [string]$mq.name
+                        Vendor = if ($mq.id -like "claude*") { "Claude" } else { "Gemini" }
+                        IsActive = [bool]$mq.is_active
+                        FiveHourPct = [int]$mq.five_hour_remaining_pct
+                        WeeklyPct = [int]$mq.weekly_remaining_pct
+                        FiveHourReset = [string]$mq.five_hour_reset
+                        WeeklyReset = [string]$mq.weekly_reset
+                    })
+                }
+            }
+
+            $this.SidecarOnline = $true
+            return $true
+        } catch {
+            $this.SidecarOnline = $false
+            return $false
+        }
+    }
+
     [void]PollUpdates() {
+        if ($this.SyncFromSidecar()) {
+            return
+        }
+
         $pbtxtModel = $this.DetectAntigravityActiveModel()
         if (![string]::IsNullOrEmpty($pbtxtModel) -and $pbtxtModel -ne $this.LastPbtxtModel) {
             $this.LastPbtxtModel = $pbtxtModel

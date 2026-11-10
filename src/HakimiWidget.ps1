@@ -151,6 +151,9 @@ public static class HakimiHostFollower {
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+
     [DllImport("user32.dll")]
     private static extern uint GetDpiForWindow(IntPtr hWnd);
 
@@ -260,39 +263,45 @@ public static class HakimiHostFollower {
         IntPtr found = IntPtr.Zero;
         int bestArea = 0;
         EnumWindows((hWnd, lParam) => {
-            if (!IsWindowVisible(hWnd) || IsIconic(hWnd)) return true;
+            if (!IsWindow(hWnd)) return true;
             uint pid = 0;
             GetWindowThreadProcessId(hWnd, out pid);
             if (pid == selfPid || pid == 0) return true;
 
+            // 1. Process Name Check: MUST be Antigravity process!
+            string procName = "";
+            try {
+                Process p = Process.GetProcessById((int)pid);
+                procName = p.ProcessName.ToLowerInvariant();
+            } catch {
+                return true;
+            }
+            if (procName.IndexOf("antigravity") < 0 || procName.IndexOf("powershell") >= 0) {
+                return true;
+            }
+
+            // 2. Class Name Check: Electron top-level window MUST be Chrome_WidgetWin_1
+            StringBuilder clsSb = new StringBuilder(128);
+            GetClassName(hWnd, clsSb, 128);
+            string cls = clsSb.ToString();
+            if (cls != "Chrome_WidgetWin_1") {
+                return true;
+            }
+
+            // 3. Title Check: exclude Hakimi itself and must not be empty
             StringBuilder sb = new StringBuilder(256);
             GetWindowText(hWnd, sb, 256);
             string title = sb.ToString();
-            if (string.IsNullOrEmpty(title)) return true;
-            if (title.Contains("Gemini Hakimi")) return true;
+            if (string.IsNullOrEmpty(title) || title.Contains("Gemini Hakimi")) return true;
 
-            bool match = false;
-            if (title.IndexOf("Antigrav", StringComparison.OrdinalIgnoreCase) >= 0 || title.IndexOf("反重力", StringComparison.OrdinalIgnoreCase) >= 0) {
-                match = true;
-            } else {
-                try {
-                    Process p = Process.GetProcessById((int)pid);
-                    string pn = p.ProcessName;
-                    if (pn.IndexOf("Antigravity", StringComparison.OrdinalIgnoreCase) >= 0) {
-                        match = true;
-                    }
-                } catch {}
-            }
-
-            if (match) {
-                RECT r;
-                if (TryGetBounds(hWnd, out r)) {
-                    int w = r.Right - r.Left;
-                    int h = r.Bottom - r.Top;
-                    if (w >= 400 && h >= 300 && (w * h) > bestArea) {
-                        bestArea = w * h;
-                        found = hWnd;
-                    }
+            // 4. Bounds Check
+            RECT r;
+            if (GetWindowRect(hWnd, out r)) {
+                int w = r.Right - r.Left;
+                int h = r.Bottom - r.Top;
+                if (w >= 400 && h >= 300 && (w * h) > bestArea) {
+                    bestArea = w * h;
+                    found = hWnd;
                 }
             }
             return true;
@@ -352,12 +361,19 @@ public static class HakimiHostFollower {
 
     public static bool IsHostWindowAlive() {
         if (_targetHwnd == IntPtr.Zero || !IsWindow(_targetHwnd)) return false;
-        return IsWindowVisible(_targetHwnd) || IsIconic(_targetHwnd);
+        if (!IsHostProcessAlive()) return false;
+        if (IsHostMinimized()) return true;
+        return IsWindowVisible(_targetHwnd);
     }
 
     public static bool IsHostMinimized() {
         if (_targetHwnd == IntPtr.Zero || !IsWindow(_targetHwnd)) return false;
-        return IsIconic(_targetHwnd);
+        if (IsIconic(_targetHwnd)) return true;
+        RECT r;
+        if (GetWindowRect(_targetHwnd, out r)) {
+            if (r.Left <= -10000 || r.Top <= -10000) return true;
+        }
+        return false;
     }
 
     public static bool IsHostProcessAlive() {
