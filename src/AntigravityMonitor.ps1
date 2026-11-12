@@ -301,6 +301,7 @@ class AntigravityMonitor {
                 try {
                     $url = "${sch}://127.0.0.1:${port}/exa.language_server_pb.LanguageServerService/GetUserStatus"
                     $req = [System.Net.HttpWebRequest]::Create($url)
+                    $req.Proxy = $null
                     $req.Method = "POST"
                     $req.ContentType = "application/json"
                     $req.Timeout = 1000
@@ -634,7 +635,8 @@ class AntigravityMonitor {
             }
             $url = "http://127.0.0.1:${scPort}/api/stats"
             $req = [System.Net.WebRequest]::CreateHttp($url)
-            $req.Timeout = 4500
+            $req.Proxy = $null
+            $req.Timeout = 1500
             $req.Method = "GET"
             if (![string]::IsNullOrEmpty($scToken)) {
                 $req.Headers.Add("X-Sidecar-Token", $scToken)

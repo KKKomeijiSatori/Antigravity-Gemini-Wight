@@ -168,5 +168,15 @@
   - 重构多端展示 UI（[`sidecars/hakimi_panel/ui.html`](file:///e:/Antigravity/Gemini-Hakimi-Widget/sidecars/hakimi_panel/ui.html)、[`src/WidgetWindow.xaml`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/WidgetWindow.xaml)、[`src/HakimiWidget.ps1`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/HakimiWidget.ps1)）：每张模型卡片改为独立单池展示（带清晰池标识胶囊与精确到秒/天的独立倒计时），桌宠头顶气泡双行改为主池与伴生独立池对比。
   - 修复了 `AntigravityMonitor.ps1` `SyncFromSidecar()` 同步 `$ModelQuotas` 字典键名（`Key`/`DisplayName`/`FiveHourRemainingPct` 等）与 `HakimiWidget.ps1` 不一致导致的字段错配问题。
 
+---
 
+### 13. 桌宠点击卡顿与 UI 线程高占用根治 (v3.1.1)
+- **核心根因定位**：
+  1. **`IsHostProcessAlive()` / `FindAntigravityWindow()` 在 50ms UI 定时器内高频调用 `.NET Process.GetProcessById`**：在 [`src/HakimiWidget.ps1`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/HakimiWidget.ps1) 的 `HakimiHostFollower.IsHostProcessAlive()` 中，每次 `50ms` `$animTimer` tick 均在 WPF UI 线程调用 `Process.GetProcessById((int)_targetPid).HasExited` 且未调用 `.Dispose()`。基准实测单次耗时约 `100.76ms`（大于 `50ms` 帧间隔），导致 UI 线程长期处于 100% 阻塞排队状态（进程 5 分钟内累积 CPU 超 `250s`、内存约 `277MB`、句柄泄漏至 `1960+`），点击与拖拽事件被严重积压卡顿。
+  2. **`Update-UI` 每 1.5s 全量重建细节卡片树与可变画刷**：`$pollTimer` 每次触发无论详情窗口是否打开或数据是否变化，都会清空 `$ModelQuotaStack` 并重建全部 6 组卡片控件、事件闭包及未冻结画刷。
+  3. **本地环回 HTTP 请求未绕过系统代理**：[`src/AntigravityMonitor.ps1`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/AntigravityMonitor.ps1) 中的 `WebRequest` 未显式设置 `$req.Proxy = $null`，首包触发系统代理探测耗时约 `55ms`。
+- **修复与优化**：
+  - 将 `HakimiHostFollower` 存活与进程名探测替换为纯 Win32 P/Invoke（`OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` + `GetExitCodeProcess` + `QueryFullProcessImageName` + `CloseHandle`），单次耗时从 `100.76ms` 降至约 `0.033ms`（零句柄泄漏），并在 `FindAntigravityWindow` 中前置便宜的 `Chrome_WidgetWin_1` 类名/标题/尺寸过滤与 `250ms` 重扫节流。
+  - 在 `OnWinEvent` 与 `MoveWidgetPhysical` / `MoveDetailPhysical` 中增加宿主区域与目标坐标去重，避免未发生位移时的冗余 `SetWindowPos` 重绘；宿主隐藏时跳过呼吸动画更新。
+  - 在 [`src/HakimiWidget.ps1`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/HakimiWidget.ps1) 中新增 `Get-FrozenBrush` 冻结画刷缓存与 `$ModelQuotaStack` 内容签名增量更新，仅在详情窗打开且配额数据实际变化时重绘卡片；在 `Set-BubbleVisible` 中跳过无变更磁盘写盘，并将退出请求与 [`src/AntigravityMonitor.ps1`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/AntigravityMonitor.ps1) 的 `SyncFromSidecar()` / `CallLanguageServerGetUserStatus()` 统一设置为 `$req.Proxy = $null` 直连。
 

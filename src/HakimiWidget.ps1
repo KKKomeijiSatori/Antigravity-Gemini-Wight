@@ -157,6 +157,18 @@ public static class HakimiHostFollower {
     [DllImport("user32.dll")]
     private static extern uint GetDpiForWindow(IntPtr hWnd);
 
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, uint dwProcessId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr hProcess, out uint lpExitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr hObject);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool QueryFullProcessImageName(IntPtr hProcess, uint dwFlags, StringBuilder lpExeName, ref int lpdwSize);
+
     [StructLayout(LayoutKind.Sequential)]
     public struct RECT {
         public int Left;
@@ -165,6 +177,8 @@ public static class HakimiHostFollower {
         public int Bottom;
     }
 
+    private const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+    private const uint STILL_ACTIVE = 259;
     private const uint EVENT_OBJECT_LOCATIONCHANGE = 0x800B;
     private const uint WINEVENT_OUTOFCONTEXT = 0x0000;
     public const uint SWP_NOSIZE = 0x0001;
@@ -192,8 +206,30 @@ public static class HakimiHostFollower {
 
     public static int LastWidgetX = 0;
     public static int LastWidgetY = 0;
+    private static int _lastDetailX = int.MinValue;
+    private static int _lastDetailY = int.MinValue;
+    private static RECT _lastHostRect = new RECT();
+    private static int _lastFindTick = 0;
     public static bool HasValidPosition = false;
     public static bool MovedByHook = false;
+
+    private static string GetProcessExeNameFast(uint pid) {
+        if (pid == 0) return "";
+        IntPtr h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        if (h == IntPtr.Zero) return "";
+        try {
+            StringBuilder sb = new StringBuilder(260);
+            int size = sb.Capacity;
+            if (QueryFullProcessImageName(h, 0, sb, ref size)) {
+                string full = sb.ToString(0, size);
+                int idx = full.LastIndexOf('\\');
+                return (idx >= 0 ? full.Substring(idx + 1) : full).ToLowerInvariant();
+            }
+            return "";
+        } finally {
+            CloseHandle(h);
+        }
+    }
 
     public static double GetDpiScale(IntPtr hwnd) {
         if (hwnd != IntPtr.Zero) {
@@ -245,65 +281,78 @@ public static class HakimiHostFollower {
 
     public static void MoveWidgetPhysical(int physX, int physY) {
         if (_widgetHwnd == IntPtr.Zero) return;
+        bool widgetMoved = !HasValidPosition || physX != LastWidgetX || physY != LastWidgetY;
         LastWidgetX = physX;
         LastWidgetY = physY;
         HasValidPosition = true;
-        SetWindowPos(_widgetHwnd, HWND_TOPMOST, physX, physY, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+        if (widgetMoved) {
+            SetWindowPos(_widgetHwnd, HWND_TOPMOST, physX, physY, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+        }
         if (DetailVisible && _detailHwnd != IntPtr.Zero && IsWindow(_detailHwnd)) {
-            SetWindowPos(_detailHwnd, HWND_TOPMOST, physX + DetailOffsetX, physY + DetailOffsetY, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+            int dx = physX + DetailOffsetX;
+            int dy = physY + DetailOffsetY;
+            if (widgetMoved || dx != _lastDetailX || dy != _lastDetailY) {
+                _lastDetailX = dx;
+                _lastDetailY = dy;
+                SetWindowPos(_detailHwnd, HWND_TOPMOST, dx, dy, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+            }
         }
     }
 
     public static void MoveDetailPhysical(int physX, int physY) {
         if (_detailHwnd == IntPtr.Zero || !IsWindow(_detailHwnd)) return;
+        if (physX == _lastDetailX && physY == _lastDetailY) return;
+        _lastDetailX = physX;
+        _lastDetailY = physY;
         SetWindowPos(_detailHwnd, IntPtr.Zero, physX, physY, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
 
     public static IntPtr FindAntigravityWindow(uint selfPid) {
+        int nowTick = Environment.TickCount;
+        if (_targetHwnd == IntPtr.Zero && unchecked(nowTick - _lastFindTick) < 250 && _lastFindTick != 0) {
+            return IntPtr.Zero;
+        }
+        _lastFindTick = nowTick;
+
         IntPtr found = IntPtr.Zero;
         int bestArea = 0;
+        StringBuilder clsSb = new StringBuilder(128);
+        StringBuilder sb = new StringBuilder(256);
         EnumWindows((hWnd, lParam) => {
             if (!IsWindow(hWnd)) return true;
-            uint pid = 0;
-            GetWindowThreadProcessId(hWnd, out pid);
-            if (pid == selfPid || pid == 0) return true;
 
-            // 1. Process Name Check: MUST be Antigravity process!
-            string procName = "";
-            try {
-                Process p = Process.GetProcessById((int)pid);
-                procName = p.ProcessName.ToLowerInvariant();
-            } catch {
-                return true;
-            }
-            if (procName.IndexOf("antigravity") < 0 || procName.IndexOf("powershell") >= 0) {
-                return true;
-            }
-
-            // 2. Class Name Check: Electron top-level window MUST be Chrome_WidgetWin_1
-            StringBuilder clsSb = new StringBuilder(128);
+            // 1. Cheap User32 Class Name Check first (avoids opening process handles for ~95% of windows)
+            clsSb.Clear();
             GetClassName(hWnd, clsSb, 128);
-            string cls = clsSb.ToString();
-            if (cls != "Chrome_WidgetWin_1") {
+            if (clsSb.ToString() != "Chrome_WidgetWin_1") {
                 return true;
             }
 
-            // 3. Title Check: exclude Hakimi itself and must not be empty
-            StringBuilder sb = new StringBuilder(256);
+            // 2. Title Check: exclude Hakimi itself and empty utility windows
+            sb.Clear();
             GetWindowText(hWnd, sb, 256);
             string title = sb.ToString();
             if (string.IsNullOrEmpty(title) || title.Contains("Gemini Hakimi")) return true;
 
-            // 4. Bounds Check
+            // 3. Bounds Check
             RECT r;
-            if (GetWindowRect(hWnd, out r)) {
-                int w = r.Right - r.Left;
-                int h = r.Bottom - r.Top;
-                if (w >= 400 && h >= 300 && (w * h) > bestArea) {
-                    bestArea = w * h;
-                    found = hWnd;
-                }
+            if (!GetWindowRect(hWnd, out r)) return true;
+            int w = r.Right - r.Left;
+            int h = r.Bottom - r.Top;
+            if (w < 400 || h < 300 || (w * h) <= bestArea) return true;
+
+            // 4. Fast Win32 Process Image Check (zero .NET Process allocation or handle leak!)
+            uint pid = 0;
+            GetWindowThreadProcessId(hWnd, out pid);
+            if (pid == selfPid || pid == 0) return true;
+            string procName = GetProcessExeNameFast(pid);
+            if (procName.IndexOf("antigravity", StringComparison.OrdinalIgnoreCase) < 0 ||
+                procName.IndexOf("powershell", StringComparison.OrdinalIgnoreCase) >= 0) {
+                return true;
             }
+
+            bestArea = w * h;
+            found = hWnd;
             return true;
         }, IntPtr.Zero);
         return found;
@@ -331,6 +380,7 @@ public static class HakimiHostFollower {
 
         _targetHwnd = candidate;
         _targetPid = pid;
+        _lastHostRect = new RECT();
 
         if (_hook == IntPtr.Zero) {
             _proc = new WinEventDelegate(OnWinEvent);
@@ -349,6 +399,9 @@ public static class HakimiHostFollower {
         }
         _targetHwnd = IntPtr.Zero;
         _targetPid = 0;
+        _lastHostRect = new RECT();
+        _lastDetailX = int.MinValue;
+        _lastDetailY = int.MinValue;
     }
 
     public static IntPtr GetTargetHwnd() {
@@ -378,11 +431,14 @@ public static class HakimiHostFollower {
 
     public static bool IsHostProcessAlive() {
         if (_targetPid == 0) return false;
+        IntPtr h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, _targetPid);
+        if (h == IntPtr.Zero) return false;
         try {
-            Process p = Process.GetProcessById((int)_targetPid);
-            return !p.HasExited;
-        } catch {
-            return false;
+            uint exitCode;
+            if (!GetExitCodeProcess(h, out exitCode)) return false;
+            return exitCode == STILL_ACTIVE;
+        } finally {
+            CloseHandle(h);
         }
     }
 
@@ -431,6 +487,7 @@ public static class HakimiHostFollower {
 
         RECT r;
         if (!TryGetBounds(_targetHwnd, out r)) return;
+        _lastHostRect = r;
 
         int anchorX = (AnchorCorner == 0 || AnchorCorner == 2) ? r.Right : r.Left;
         int anchorY = (AnchorCorner == 0 || AnchorCorner == 1) ? r.Bottom : r.Top;
@@ -444,8 +501,13 @@ public static class HakimiHostFollower {
     private static void OnWinEvent(
         IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
         int idObject, int idChild, uint dwEventThread, uint dwmsEventTime) {
-        if (IsPaused || idObject != 0 || hwnd == IntPtr.Zero) return;
-        if (hwnd != _targetHwnd) return;
+        if (IsPaused || idObject != 0 || idChild != 0 || hwnd == IntPtr.Zero || hwnd != _targetHwnd) return;
+        RECT r;
+        if (!TryGetBounds(_targetHwnd, out r)) return;
+        if (r.Left == _lastHostRect.Left && r.Top == _lastHostRect.Top && r.Right == _lastHostRect.Right && r.Bottom == _lastHostRect.Bottom) {
+            return;
+        }
+        _lastHostRect = r;
         MovedByHook = true;
         SyncNow();
     }
@@ -799,8 +861,10 @@ $window.Topmost = [bool]$Config.topmost
 $detailWindow.Topmost = [bool]$Config.topmost
 
 function Set-BubbleVisible([bool]$visible) {
-    $Config.speech_bubble_enabled = $visible
-    Save-Config
+    if ([bool]$Config.speech_bubble_enabled -ne $visible) {
+        $Config.speech_bubble_enabled = $visible
+        Save-Config
+    }
     if ($visible) {
         $Bubble.Opacity = 1.0
         $Bubble.IsHitTestVisible = $true
@@ -820,17 +884,29 @@ function Format-Tok([double]$n) {
     return [string]::Format("{0:F0}", $n)
 }
 
+$script:BrushCache = @{}
+function Get-FrozenBrush([string]$hex) {
+    if ($script:BrushCache.ContainsKey($hex)) {
+        return $script:BrushCache[$hex]
+    }
+    $col = [System.Windows.Media.ColorConverter]::ConvertFromString($hex)
+    $b = [System.Windows.Media.SolidColorBrush]::new($col)
+    $b.Freeze()
+    $script:BrushCache[$hex] = $b
+    return $b
+}
+
 function Get-QuotaColorBrush([int]$remainingPct, [bool]$isWeekly) {
     if ($remainingPct -le 15) {
-        return [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString("#EF4444"))
+        return (Get-FrozenBrush "#EF4444")
     }
     if ($remainingPct -le 35) {
-        return [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString("#F59E0B"))
+        return (Get-FrozenBrush "#F59E0B")
     }
     if ($isWeekly) {
-        return [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString("#3B82F6"))
+        return (Get-FrozenBrush "#3B82F6")
     }
-    return [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString("#10B981"))
+    return (Get-FrozenBrush "#10B981")
 }
 
 $state = @{
@@ -854,6 +930,8 @@ $state = @{
     EverHookedHost = $false
     HostMissingTicks = 0
     DetailWasOpen = $false
+    LastQuotaSig = ""
+    QuotaStackDirty = $true
 }
 
 function Show-BubbleQuote([string]$text, [string]$sub = "", [int]$durationSec = 4) {
@@ -1029,12 +1107,12 @@ function Update-UI {
     $rem5h = [int]$Monitor.FiveHour.RemainingPct
     if ($isActDis) {
         $FiveHourValue.Text = "--"
-        $FiveHourValue.Foreground = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString("#94A3B8"))
+        $FiveHourValue.Foreground = Get-FrozenBrush "#94A3B8"
         $FiveHourBarFill.Width = 0
         $FiveHourResetText.Text = "🔒 $($Monitor.FiveHour.ResetDisplay)"
     } else {
         $FiveHourValue.Text = "$rem5h%"
-        $FiveHourValue.Foreground = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString("#0F172A"))
+        $FiveHourValue.Foreground = Get-FrozenBrush "#0F172A"
         $FiveHourBarFill.Width = [Math]::Round(118.0 * ($rem5h / 100.0))
         $FiveHourBarFill.Background = Get-QuotaColorBrush $rem5h ([bool]$Monitor.FiveHour.IsWeekly)
         $FiveHourResetText.Text = "⏳ $($Monitor.FiveHour.ResetDisplay)"
@@ -1058,11 +1136,11 @@ function Update-UI {
     # 2. Update Adaptive Detail Window (Independent Pool-Aware Per-Model Quotas)
     if ($null -ne $TogglePetSoundText) {
         $TogglePetSoundText.Text = if ($Config.sound_enabled) { "🔊 摸头音效: 开" } else { "🔇 摸头音效: 关" }
-        $TogglePetSoundText.Foreground = if ($Config.sound_enabled) { [System.Windows.Media.BrushConverter]::new().ConvertFromString("#A5B4FC") } else { [System.Windows.Media.BrushConverter]::new().ConvertFromString("#64748B") }
+        $TogglePetSoundText.Foreground = if ($Config.sound_enabled) { Get-FrozenBrush "#A5B4FC" } else { Get-FrozenBrush "#64748B" }
     }
     if ($null -ne $ToggleCacheSoundText) {
         $ToggleCacheSoundText.Text = if ($Config.cache_sound_enabled) { "🔔 缓存提示音: 开" } else { "🔕 缓存提示音: 关" }
-        $ToggleCacheSoundText.Foreground = if ($Config.cache_sound_enabled) { [System.Windows.Media.BrushConverter]::new().ConvertFromString("#34D399") } else { [System.Windows.Media.BrushConverter]::new().ConvertFromString("#64748B") }
+        $ToggleCacheSoundText.Foreground = if ($Config.cache_sound_enabled) { Get-FrozenBrush "#34D399" } else { Get-FrozenBrush "#64748B" }
     }
 
     $DetailPlanBadge.Text = if (![string]::IsNullOrEmpty($Monitor.LivePlanName)) {
@@ -1081,6 +1159,21 @@ function Update-UI {
     $DetailHitText.Text = "命中 $($Monitor.LastTurn.CacheHitRate)%"
     $DetailTodayText.Text = [string]::Format("今日累计 ({0} 轮): ¥{1:F2}", $Monitor.Today.Turns, $Monitor.Today.CostCNY)
     $DetailSaveText.Text = [string]::Format("⚡ 缓存已省 ¥{0:F2}", $Monitor.Today.SavingsCNY)
+
+    $sigParts = New-Object System.Collections.Generic.List[string]
+    foreach ($mq in $Monitor.ModelQuotas) {
+        $sigParts.Add("$($mq.Key):$($mq.RemainingPct):$($mq.Disabled):$($mq.IsActive):$($mq.ResetDisplay)")
+    }
+    $quotaSig = "$($Monitor.ActiveModel)|" + ($sigParts -join ";")
+    if ($quotaSig -ne $state.LastQuotaSig) {
+        $state.QuotaStackDirty = $true
+    }
+    $shouldRebuildStack = ($state.DetailOpen -or [string]::IsNullOrEmpty($state.LastQuotaSig)) -and $state.QuotaStackDirty
+    if (!$shouldRebuildStack) {
+        return
+    }
+    $state.LastQuotaSig = $quotaSig
+    $state.QuotaStackDirty = $false
 
     $poolBadgePalette = @{
         "flash_hydrogen" = @{ Bg = "#2210B981"; Border = "#5510B981"; Text = "#34D399" }
@@ -1108,16 +1201,16 @@ function Update-UI {
         $rowBorder.Tag = [string]$mq.Key
         $rowBorder.Opacity = if ($isDis -and !$isAct) { 0.72 } else { 1.0 }
         if ($isAct) {
-            $rowBorder.Background = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString("#334F46E5"))
-            $rowBorder.BorderBrush = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString("#818CF8"))
+            $rowBorder.Background = Get-FrozenBrush "#334F46E5"
+            $rowBorder.BorderBrush = Get-FrozenBrush "#818CF8"
             $rowBorder.BorderThickness = [System.Windows.Thickness]::new(1)
         } elseif ($isDis) {
-            $rowBorder.Background = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString("#1264748B"))
-            $rowBorder.BorderBrush = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString("#2864748B"))
+            $rowBorder.Background = Get-FrozenBrush "#1264748B"
+            $rowBorder.BorderBrush = Get-FrozenBrush "#2864748B"
             $rowBorder.BorderThickness = [System.Windows.Thickness]::new(1)
         } else {
-            $rowBorder.Background = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString($(if ($isClaude) { "#17F59E0B" } else { "#12FFFFFF" })))
-            $rowBorder.BorderBrush = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString($(if ($isClaude) { "#2EF59E0B" } else { "#1FFFFFFF" })))
+            $rowBorder.Background = Get-FrozenBrush $(if ($isClaude) { "#17F59E0B" } else { "#12FFFFFF" })
+            $rowBorder.BorderBrush = Get-FrozenBrush $(if ($isClaude) { "#2EF59E0B" } else { "#1FFFFFFF" })
             $rowBorder.BorderThickness = [System.Windows.Thickness]::new(1)
         }
 
@@ -1138,7 +1231,7 @@ function Update-UI {
         $nameTxt = [System.Windows.Controls.TextBlock]::new()
         $nameTxt.Text = $(if ($isAct) { "● $($mq.DisplayName)" } else { "  $($mq.DisplayName)" })
         $nameColor = if ($isAct) { "#A5B4FC" } elseif ($isDis) { "#94A3B8" } elseif ($isClaude) { "#FCD34D" } else { "#F1F5F9" }
-        $nameTxt.Foreground = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString($nameColor))
+        $nameTxt.Foreground = Get-FrozenBrush $nameColor
         $nameTxt.FontSize = 10.2
         $nameTxt.FontWeight = [System.Windows.FontWeights]::Bold
         $nameTxt.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
@@ -1156,14 +1249,14 @@ function Update-UI {
         $pBadge.Padding = [System.Windows.Thickness]::new(4, 0.5, 4, 0.5)
         $pBadge.Margin = [System.Windows.Thickness]::new(5, 0, 0, 0)
         $pBadge.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
-        $pBadge.Background = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString($pal.Bg))
-        $pBadge.BorderBrush = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString($pal.Border))
+        $pBadge.Background = Get-FrozenBrush $pal.Bg
+        $pBadge.BorderBrush = Get-FrozenBrush $pal.Border
         $pBadge.BorderThickness = [System.Windows.Thickness]::new(0.8)
         $pBadgeTxt = [System.Windows.Controls.TextBlock]::new()
         $pBadgeTxt.Text = $poolTxt
         $pBadgeTxt.FontSize = 8.2
         $pBadgeTxt.FontWeight = [System.Windows.FontWeights]::SemiBold
-        $pBadgeTxt.Foreground = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString($pal.Text))
+        $pBadgeTxt.Foreground = Get-FrozenBrush $pal.Text
         $pBadge.Child = $pBadgeTxt
         $leftStack.Children.Add($pBadge) | Out-Null
 
@@ -1171,7 +1264,7 @@ function Update-UI {
 
         $rightTxt = [System.Windows.Controls.TextBlock]::new()
         $rightTxt.Text = $resText
-        $rightTxt.Foreground = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString($(if ($isDis) { "#64748B" } else { "#94A3B8" })))
+        $rightTxt.Foreground = Get-FrozenBrush $(if ($isDis) { "#64748B" } else { "#94A3B8" })
         $rightTxt.FontSize = 8.4
         $rightTxt.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Right
         $rightTxt.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
@@ -1197,14 +1290,14 @@ function Update-UI {
         $lblWin = [System.Windows.Controls.TextBlock]::new()
         $lblWin.Text = $winText
         $lblWin.FontSize = 8.8
-        $lblWin.Foreground = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString("#94A3B8"))
+        $lblWin.Foreground = Get-FrozenBrush "#94A3B8"
         $lblWin.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
         [System.Windows.Controls.Grid]::SetColumn($lblWin, 0)
 
         $trk = [System.Windows.Controls.Border]::new()
         $trk.Width = 172; $trk.Height = 5.5
         $trk.CornerRadius = [System.Windows.CornerRadius]::new(3)
-        $trk.Background = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString("#334155"))
+        $trk.Background = Get-FrozenBrush "#334155"
         $trk.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Left
         $trk.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
         $fil = [System.Windows.Controls.Border]::new()
@@ -1213,7 +1306,7 @@ function Update-UI {
         $fil.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Left
         if ($isDis) {
             $fil.Width = 0
-            $fil.Background = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString("#475569"))
+            $fil.Background = Get-FrozenBrush "#475569"
         } else {
             $fil.Width = [Math]::Round(172.0 * ($pctVal / 100.0))
             $fil.Background = Get-QuotaColorBrush $pctVal ([bool]$mq.IsWeekly)
@@ -1228,7 +1321,7 @@ function Update-UI {
         $valTxt.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Right
         $valTxt.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
         $valTxt.Foreground = if ($isDis) {
-            [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString("#94A3B8"))
+            Get-FrozenBrush "#94A3B8"
         } else {
             Get-QuotaColorBrush $pctVal ([bool]$mq.IsWeekly)
         }
@@ -1843,7 +1936,24 @@ function Rebuild-ContextMenu {
     $miExit.Header = "❌ 退出哈基米桌宠"
     $miExit.Add_Click({
         try {
-            Invoke-RestMethod -Uri "http://127.0.0.1:54716/api/desktop-pet" -Method Post -Body '{"action":"manual_exit"}' -ContentType "application/json" -TimeoutSec 1 | Out-Null
+            $exPort = 54716
+            $exTok = ""
+            $infoP = Join-Path $env:USERPROFILE ".gemini\antigravity\sidecar_data\gemini-hakimi-widget\hakimi_panel\data\server_info.json"
+            if (Test-Path $infoP) {
+                $sInfo = Get-Content -LiteralPath $infoP -Raw -Encoding UTF8 | ConvertFrom-Json
+                if ($sInfo.port) { $exPort = [int]$sInfo.port }
+                if ($sInfo.token) { $exTok = [string]$sInfo.token }
+            }
+            $exReq = [System.Net.WebRequest]::CreateHttp("http://127.0.0.1:${exPort}/api/desktop-pet")
+            $exReq.Proxy = $null
+            $exReq.Method = "POST"
+            $exReq.Timeout = 800
+            $exReq.ContentType = "application/json"
+            if (![string]::IsNullOrEmpty($exTok)) { $exReq.Headers.Add("X-Sidecar-Token", $exTok) }
+            $b = [System.Text.Encoding]::UTF8.GetBytes('{"action":"manual_exit"}')
+            $exReq.ContentLength = $b.Length
+            $st = $exReq.GetRequestStream(); $st.Write($b, 0, $b.Length); $st.Close()
+            $exReq.GetResponse().Dispose()
         } catch {}
         $window.Close()
     })
@@ -1940,11 +2050,13 @@ $animTimer = [System.Windows.Threading.DispatcherTimer]::new()
 $animTimer.Interval = [TimeSpan]::FromMilliseconds(50)
 $animTimer.Add_Tick({
     try {
-    if (!$state.IsSpringRebounding) {
-        $state.BreathPhase += 0.14
-        $BreathTranslate.Y = [Math]::Sin($state.BreathPhase) * 2.0
-    } else {
-        $BreathTranslate.Y = $BreathTranslate.Y * 0.7
+    if (!$state.HostHiddenState) {
+        if (!$state.IsSpringRebounding) {
+            $state.BreathPhase += 0.14
+            $BreathTranslate.Y = [Math]::Sin($state.BreathPhase) * 2.0
+        } else {
+            $BreathTranslate.Y = $BreathTranslate.Y * 0.7
+        }
     }
 
     if ($state.QuoteRevertTime -ne [datetime]::MinValue -and [datetime]::UtcNow -ge $state.QuoteRevertTime) {
