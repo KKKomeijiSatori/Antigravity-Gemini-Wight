@@ -7,6 +7,7 @@ Antigravity Native Sidecar Server for Gemini Hakimi Token & Rate-Limit Widget
 
 import os
 import re
+import ssl
 import sys
 import threading
 import urllib.request
@@ -80,7 +81,7 @@ def get_config():
         "follow_antigravity": True,
         "hide_with_antigravity": True,
         "auto_launch_desktop_pet": False,
-        "active_model": "gemini-3.8-flash",
+        "active_model": "gemini-4-hydrogen",
         "active_plan": "free",
         "antigravity_brain_path": BRAIN_DIR
     }
@@ -93,33 +94,54 @@ def get_config():
 
 
 CONV_MODEL_CACHE = {}
+_LAST_PBTXT_MODEL = None
+
+_MODEL_MATCH_RULES = (
+    ("gemini-4-hydrogen", ("MODEL_PLACEHOLDER_M525", "MODEL_PLACEHOLDER_M526", "MODEL_PLACEHOLDER_M527", "MODEL_PLACEHOLDER_M528", "gemini-4-hydrogen", "hydrogen")),
+    ("gemini-4-carbon", ("MODEL_PLACEHOLDER_M670", "gemini-4-carbon", "carbon")),
+    ("gemini-4-argon", ("MODEL_PLACEHOLDER_M417", "MODEL_PLACEHOLDER_M418", "MODEL_PLACEHOLDER_M419", "gemini-4-argon", "argon")),
+    ("claude-opus-5-5", ("MODEL_PLACEHOLDER_M400", "MODEL_PLACEHOLDER_M401", "MODEL_PLACEHOLDER_M402", "MODEL_PLACEHOLDER_M26", "claude-opus", "opus")),
+    ("claude-sonnet-5-5", ("MODEL_PLACEHOLDER_M403", "MODEL_PLACEHOLDER_M404", "MODEL_PLACEHOLDER_M405", "claude-sonnet", "sonnet")),
+    ("gemini-3.8-flash", ("MODEL_PLACEHOLDER_M318", "MODEL_PLACEHOLDER_M319", "MODEL_PLACEHOLDER_M320", "gemini-3.8-flash", "flash")),
+)
+
+
+def map_raw_model_key(raw_text, placeholder=""):
+    """Map placeholder tokens, model IDs, or labels to canonical pricing model keys."""
+    combined = f"{placeholder} {raw_text}".lower()
+    for mkey, tokens in _MODEL_MATCH_RULES:
+        for tok in tokens:
+            if tok.lower() in combined:
+                return mkey
+    return None
+
 
 def get_conv_model(conv_id):
     if not conv_id:
         return None
-    if conv_id in CONV_MODEL_CACHE:
-        return CONV_MODEL_CACHE[conv_id]
     db_path = os.path.join(AGY_DIR, "conversations", f"{conv_id}.db")
+    cached = CONV_MODEL_CACHE.get(conv_id)
+    if isinstance(cached, str) and cached:
+        return cached
     if os.path.exists(db_path):
         try:
+            st_size = os.path.getsize(db_path)
+            if isinstance(cached, tuple) and cached[0] == st_size:
+                return cached[1] or detect_antigravity_active_model()
             with open(db_path, "rb") as f:
-                f.seek(max(0, os.path.getsize(db_path) - 120000))
-                raw = f.read()
-            if b"claude-opus" in raw or b"MODEL_PLACEHOLDER_M26" in raw or b"opus" in raw.lower():
-                CONV_MODEL_CACHE[conv_id] = "claude-opus-5-5"
-                return "claude-opus-5-5"
-            if b"claude-sonnet" in raw or b"MODEL_PLACEHOLDER_M403" in raw or b"MODEL_PLACEHOLDER_M404" in raw or b"MODEL_PLACEHOLDER_M405" in raw or b"sonnet" in raw.lower():
-                CONV_MODEL_CACHE[conv_id] = "claude-sonnet-5-5"
-                return "claude-sonnet-5-5"
-            if b"MODEL_PLACEHOLDER_M417" in raw or b"MODEL_PLACEHOLDER_M418" in raw or b"MODEL_PLACEHOLDER_M419" in raw or b"argon" in raw.lower():
-                CONV_MODEL_CACHE[conv_id] = "gemini-4-argon"
-                return "gemini-4-argon"
-            if b"MODEL_PLACEHOLDER_M318" in raw or b"flash" in raw.lower() or b"gemini-3.8-flash" in raw:
-                CONV_MODEL_CACHE[conv_id] = "gemini-3.8-flash"
-                return "gemini-3.8-flash"
+                f.seek(max(0, st_size - 120000))
+                raw = f.read().decode("latin-1", errors="ignore")
+            mkey = map_raw_model_key(raw)
+            if mkey:
+                CONV_MODEL_CACHE[conv_id] = mkey
+                return mkey
+            CONV_MODEL_CACHE[conv_id] = (st_size, None)
         except Exception:
             pass
+    else:
+        CONV_MODEL_CACHE[conv_id] = (0, None)
     return detect_antigravity_active_model()
+
 
 def detect_antigravity_active_model():
     pbtxt = os.path.join(AGY_DIR, "antigravity_state.pbtxt")
@@ -130,47 +152,79 @@ def detect_antigravity_active_model():
             m = re.search(r'last_selected_agent_model:\s*(\S+)', content)
             if m:
                 val = m.group(1).strip('"\' ')
-                if "M318" in val or "flash" in val.lower():
-                    return "gemini-3.8-flash"
-                if "M417" in val or "M418" in val or "M419" in val or "argon" in val.lower():
-                    return "gemini-4-argon"
-                if "M26" in val or "opus" in val.lower():
-                    return "claude-opus-5-5"
-                if "M403" in val or "M404" in val or "M405" in val or "sonnet" in val.lower():
-                    return "claude-sonnet-5-5"
+                mkey = map_raw_model_key(val)
+                if mkey:
+                    return mkey
         except Exception:
             pass
-    return "gemini-3.8-flash"
+    return "gemini-4-hydrogen"
+
 
 def get_pricing():
     default_pricing = {
         "usd_to_cny": 7.25,
-        "default_model": "gemini-3.8-flash",
+        "default_model": "gemini-4-hydrogen",
         "context_window": 1048576,
         "models": {
-            "gemini-4-argon": {
-                "display_name": "Gemini 4 Argon",
-                "short_name": "4 Argon",
+            "gemini-4-hydrogen": {
+                "display_name": "Gemini 4 Hydrogen",
+                "short_name": "4 Hydrogen",
+                "vendor": "Gemini",
+                "badge": "NEW",
+                "quota_pool": "flash_hydrogen",
+                "pool_label": "Flash/H 共享池",
                 "context_window": 1048576,
-                "tiers": [{"hit": 0.1, "miss": 2.0, "out": 10.0}]
+                "tiers": [{"hit": 0.075, "miss": 0.75, "out": 3.75}]
             },
             "gemini-3.8-flash": {
                 "display_name": "Gemini 3.8 Flash",
                 "short_name": "3.8 Flash",
+                "vendor": "Gemini",
+                "badge": "FLASH",
+                "quota_pool": "flash_hydrogen",
+                "pool_label": "Flash/H 共享池",
                 "context_window": 1048576,
                 "tiers": [{"hit": 0.075, "miss": 0.75, "out": 3.75}]
+            },
+            "gemini-4-argon": {
+                "display_name": "Gemini 4 Argon",
+                "short_name": "4 Argon",
+                "vendor": "Gemini",
+                "badge": "FLAGSHIP",
+                "quota_pool": "argon",
+                "pool_label": "Argon 独立池",
+                "context_window": 1048576,
+                "tiers": [{"hit": 0.1, "miss": 2.0, "out": 10.0}]
             },
             "claude-opus-5-5": {
                 "display_name": "Claude Opus 5.5",
                 "short_name": "Opus 5.5",
+                "vendor": "Claude",
+                "badge": "CLAUDE",
+                "quota_pool": "claude",
+                "pool_label": "Claude 独立池",
                 "context_window": 200000,
                 "tiers": [{"hit": 0.2, "miss": 4.0, "out": 20.0}]
             },
             "claude-sonnet-5-5": {
                 "display_name": "Claude Sonnet 5.5",
                 "short_name": "Sonnet 5.5",
+                "vendor": "Claude",
+                "badge": "CLAUDE",
+                "quota_pool": "claude",
+                "pool_label": "Claude 独立池",
                 "context_window": 200000,
                 "tiers": [{"hit": 0.1, "miss": 2.0, "out": 10.0}]
+            },
+            "gemini-4-carbon": {
+                "display_name": "Gemini 4 Carbon",
+                "short_name": "4 Carbon",
+                "vendor": "Gemini",
+                "badge": "ULTRA",
+                "quota_pool": "carbon",
+                "pool_label": "Carbon 独立池",
+                "context_window": 1048576,
+                "tiers": [{"hit": 0.15, "miss": 3.0, "out": 15.0}]
             }
         },
         "limits": {
@@ -346,7 +400,141 @@ def is_desktop_pet_running():
     return False
 
 
-_LS_CACHE = {"port": 0, "csrf": "", "last_sync": 0.0, "quotas": {}, "detected_model": None}
+_LS_CACHE = {"scheme": "", "port": 0, "csrf": "", "last_sync": 0.0, "quotas": {}, "plan_name": ""}
+_SSL_UNVERIFIED = ssl._create_unverified_context()
+_DIRECT_HTTP_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+_DIRECT_HTTPS_OPENER = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}),
+    urllib.request.HTTPSHandler(context=_SSL_UNVERIFIED),
+)
+
+_SHARED_POOL_PARTNERS = (
+    ("gemini-4-hydrogen", "gemini-3.8-flash"),
+    ("claude-opus-5-5", "claude-sonnet-5-5"),
+)
+
+
+def _format_countdown(secs_left):
+    if secs_left <= 0:
+        return "已就绪"
+    total_mins = int(secs_left // 60)
+    hours = total_mins // 60
+    mins = total_mins % 60
+    if hours >= 24:
+        days = hours // 24
+        rem_h = hours % 24
+        return f"{days}d{rem_h}h"
+    if hours > 0:
+        return f"{hours}h{mins:02d}m"
+    return f"{max(1, mins)}m"
+
+
+def _probe_ls_get_user_status(port, csrf, preferred_scheme=""):
+    schemes = [preferred_scheme] if preferred_scheme in ("https", "http") else []
+    for s in ("https", "http"):
+        if s not in schemes:
+            schemes.append(s)
+    for scheme in schemes:
+        url = f"{scheme}://127.0.0.1:{port}/exa.language_server_pb.LanguageServerService/GetUserStatus"
+        req = urllib.request.Request(
+            url,
+            data=b"{}",
+            headers={
+                "Content-Type": "application/json",
+                "Connect-Protocol-Version": "1",
+                "x-codeium-csrf-token": csrf,
+            },
+            method="POST",
+        )
+        try:
+            opener = _DIRECT_HTTPS_OPENER if scheme == "https" else _DIRECT_HTTP_OPENER
+            with opener.open(req, timeout=0.6) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            configs = data.get("userStatus", {}).get("cascadeModelConfigData", {}).get("clientModelConfigs", [])
+            if configs:
+                return data, scheme
+        except Exception:
+            continue
+    return None, ""
+
+
+def _discover_ls_candidates():
+    found = []
+    try:
+        ps_cmd = (
+            "Get-CimInstance Win32_Process -Filter \"Name LIKE 'language_server%'\" | ForEach-Object { "
+            "$p = $_.ProcessId; $c = $_.CommandLine; "
+            "if ($c -match '--csrf_token[=\\s]+([a-fA-F0-9\\-]+)') { "
+            "$t = $Matches[1]; "
+            "Get-NetTCPConnection -OwningProcess $p -State Listen -ErrorAction SilentlyContinue | Sort-Object LocalPort | ForEach-Object { "
+            "Write-Output \"$p|$($_.LocalPort)|$t\" } } }"
+        )
+        out = subprocess.check_output(
+            ["powershell.exe", "-NoProfile", "-Command", ps_cmd],
+            timeout=2.5,
+            creationflags=0x08000000,
+        ).decode("utf-8", errors="ignore")
+        for line in out.splitlines():
+            parts = line.strip().split("|")
+            if len(parts) == 3:
+                try:
+                    found.append((int(parts[0]), int(parts[1]), parts[2].strip()))
+                except ValueError:
+                    pass
+    except Exception:
+        pass
+    return found
+
+
+def _parse_model_quota_entry(cfg_item, now_utc):
+    disabled = bool(cfg_item.get("disabled"))
+    tag_title = str(cfg_item.get("tagTitle") or "")
+    tag_desc = str(cfg_item.get("tagDescription") or "")
+    qinfo = cfg_item.get("quotaInfo") or {}
+    if disabled and not qinfo:
+        return {
+            "disabled": True,
+            "is_weekly": False,
+            "pct": 0,
+            "window_label": tag_title or "Unavailable",
+            "reset": "暂不可用 · 需 Ultra",
+            "countdown": "--",
+            "tag_desc": tag_desc,
+        }
+
+    frac = float(qinfo["remainingFraction"]) if "remainingFraction" in qinfo else (0.0 if "resetTime" in qinfo else 1.0)
+    pct = max(0, min(100, int(round(frac * 100.0))))
+    rtime = str(qinfo.get("resetTime") or "")
+    is_weekly = False
+    reset_str = "实时同步"
+    countdown = ""
+    if rtime:
+        try:
+            rdt = datetime.fromisoformat(rtime.replace("Z", "+00:00"))
+            secs_left = (rdt - now_utc).total_seconds()
+            hours_left = secs_left / 3600.0
+            is_weekly = (hours_left > 24.0)
+            local_dt = rdt.astimezone()
+            countdown = _format_countdown(secs_left)
+            if secs_left <= 0:
+                reset_str = "已就绪 · 随时重置"
+            elif is_weekly:
+                reset_str = f"重置 {local_dt.strftime('%m-%d %H:%M')} ({countdown})"
+            else:
+                reset_str = f"重置 {local_dt.strftime('%H:%M:%S')} ({countdown})"
+        except Exception:
+            pass
+
+    return {
+        "disabled": disabled,
+        "is_weekly": is_weekly,
+        "pct": pct,
+        "window_label": "多日周期池" if is_weekly else "5h 周期池",
+        "reset": reset_str,
+        "countdown": countdown,
+        "tag_desc": tag_desc,
+    }
+
 
 def fetch_live_antigravity_quotas():
     now = time.time()
@@ -354,106 +542,73 @@ def fetch_live_antigravity_quotas():
         return _LS_CACHE["quotas"]
     _LS_CACHE["last_sync"] = now
 
-    candidates = []
-    if _LS_CACHE["port"] > 0 and _LS_CACHE["csrf"]:
-        candidates.append((_LS_CACHE["port"], _LS_CACHE["csrf"]))
     bridge_path = os.path.join(PLUGIN_DIR, "config", "ls_bridge.json")
+    initial_targets = []
+    if _LS_CACHE["port"] > 0 and _LS_CACHE["csrf"]:
+        initial_targets.append((0, _LS_CACHE["port"], _LS_CACHE["csrf"], _LS_CACHE["scheme"]))
     if os.path.exists(bridge_path):
-        try:
-            b = load_json(bridge_path, {})
-            if b.get("port") and b.get("csrf"):
-                cand = (int(b["port"]), str(b["csrf"]))
-                if cand not in candidates:
-                    candidates.append(cand)
-        except Exception:
-            pass
-    if not candidates:
-        try:
-            ps_cmd = (
-                "Get-CimInstance Win32_Process -Filter \"Name LIKE 'language_server%'\" | ForEach-Object { "
-                "$p = $_.ProcessId; $c = $_.CommandLine; "
-                "if ($c -match '--csrf_token[=\\s]+([a-fA-F0-9\\-]+)') { "
-                "$t = $Matches[1]; "
-                "Get-NetTCPConnection -OwningProcess $p -State Listen -ErrorAction SilentlyContinue | ForEach-Object { "
-                "Write-Output \"$($_.LocalPort)|$t\" } } }"
-            )
-            out = subprocess.check_output(
-                ["powershell.exe", "-NoProfile", "-Command", ps_cmd],
-                timeout=2.5,
-                creationflags=0x08000000
-            ).decode("utf-8", errors="ignore")
-            for line in out.splitlines():
-                if "|" in line:
-                    pt, tk = line.strip().split("|", 1)
-                    candidates.append((int(pt), tk.strip()))
-        except Exception:
-            pass
+        b = load_json(bridge_path, {})
+        if b.get("port") and b.get("csrf"):
+            b_item = (int(b.get("pid") or 0), int(b["port"]), str(b["csrf"]), str(b.get("scheme") or ""))
+            if not any(x[1] == b_item[1] and x[2] == b_item[2] for x in initial_targets):
+                initial_targets.append(b_item)
 
-    for port, csrf in candidates:
-        url = f"http://127.0.0.1:{port}/exa.language_server_pb.LanguageServerService/GetUserStatus"
-        req = urllib.request.Request(
-            url,
-            data=b"{}",
-            headers={
-                "Content-Type": "application/json",
-                "Connect-Protocol-Version": "1",
-                "x-codeium-csrf-token": csrf
-            },
-            method="POST"
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=1.0) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            configs = data.get("userStatus", {}).get("cascadeModelConfigData", {}).get("clientModelConfigs", [])
-            if not configs:
-                continue
-            _LS_CACHE["port"] = port
-            _LS_CACHE["csrf"] = csrf
-            quotas = {}
-            now_utc = datetime.now(timezone.utc)
-            for c in configs:
-                label = str(c.get("label") or "")
-                ph = str(c.get("modelOrAlias", {}).get("model") or "")
-                mkey = None
-                if "Argon" in label or ph in ("MODEL_PLACEHOLDER_M417", "MODEL_PLACEHOLDER_M418", "MODEL_PLACEHOLDER_M419"):
-                    mkey = "gemini-4-argon"
-                elif "Flash" in label or ph in ("MODEL_PLACEHOLDER_M318", "MODEL_PLACEHOLDER_M319", "MODEL_PLACEHOLDER_M320"):
-                    mkey = "gemini-3.8-flash"
-                elif "Opus" in label or ph in ("MODEL_PLACEHOLDER_M400", "MODEL_PLACEHOLDER_M401", "MODEL_PLACEHOLDER_M402", "MODEL_PLACEHOLDER_M26"):
-                    mkey = "claude-opus-5-5"
-                elif "Sonnet" in label or ph in ("MODEL_PLACEHOLDER_M403", "MODEL_PLACEHOLDER_M404", "MODEL_PLACEHOLDER_M405"):
-                    mkey = "claude-sonnet-5-5"
-                if not mkey or mkey in quotas:
-                    continue
-                qinfo = c.get("quotaInfo") or {}
-                frac = float(qinfo["remainingFraction"]) if "remainingFraction" in qinfo else (0.0 if "resetTime" in qinfo else 1.0)
-                pct = max(0, min(100, int(round(frac * 100.0))))
-                rtime = str(qinfo.get("resetTime") or "")
-                hours_left = 4.0
-                reset_5h = "实时滚动"
-                reset_7d = "每周滚动"
-                if rtime:
-                    try:
-                        rdt = datetime.fromisoformat(rtime.replace("Z", "+00:00"))
-                        hours_left = (rdt - now_utc).total_seconds() / 3600.0
-                        local_dt = rdt.astimezone()
-                        if hours_left > 24.0:
-                            reset_7d = "重置 " + local_dt.strftime("%m-%d %H:%M")
-                        else:
-                            reset_5h = "重置 " + local_dt.strftime("%H:%M")
-                    except Exception:
-                        pass
-                if hours_left > 24.0:
-                    quotas[mkey] = {"is_weekly": True, "pct": pct, "reset": reset_7d}
-                else:
-                    quotas[mkey] = {"is_weekly": False, "pct": pct, "reset": reset_5h}
-            if quotas:
-                _LS_CACHE["quotas"] = quotas
-                return quotas
-        except Exception:
-            if port == _LS_CACHE["port"]:
-                _LS_CACHE["port"] = 0
-                _LS_CACHE["csrf"] = ""
+    data = None
+    hit_pid, hit_port, hit_csrf, hit_scheme = 0, 0, "", ""
+
+    for pid, port, csrf, pref_scheme in initial_targets:
+        data, hit_scheme = _probe_ls_get_user_status(port, csrf, pref_scheme)
+        if data:
+            hit_pid, hit_port, hit_csrf = pid, port, csrf
+            break
+
+    if not data:
+        _LS_CACHE["port"] = 0
+        _LS_CACHE["csrf"] = ""
+        _LS_CACHE["scheme"] = ""
+        for pid, port, csrf in _discover_ls_candidates():
+            data, hit_scheme = _probe_ls_get_user_status(port, csrf)
+            if data:
+                hit_pid, hit_port, hit_csrf = pid, port, csrf
+                save_json(bridge_path, {"scheme": hit_scheme, "port": hit_port, "csrf": hit_csrf, "pid": hit_pid})
+                break
+
+    if not data:
+        return _LS_CACHE["quotas"]
+
+    _LS_CACHE["scheme"] = hit_scheme
+    _LS_CACHE["port"] = hit_port
+    _LS_CACHE["csrf"] = hit_csrf
+
+    user_status = data.get("userStatus", {})
+    plan_info = user_status.get("planStatus", {}).get("planInfo", {})
+    if plan_info.get("planName"):
+        _LS_CACHE["plan_name"] = str(plan_info["planName"])
+
+    configs = user_status.get("cascadeModelConfigData", {}).get("clientModelConfigs", [])
+    quotas = {}
+    now_utc = datetime.now(timezone.utc)
+
+    for c in configs:
+        label = str(c.get("label") or "")
+        mid = str(c.get("modelId") or "")
+        ph = str((c.get("modelOrAlias") or {}).get("model") or "")
+        mkey = map_raw_model_key(f"{label} {mid}", ph)
+        if not mkey:
+            continue
+        parsed = _parse_model_quota_entry(c, now_utc)
+        # Prefer enabled variant or '-high' if multiple tiers exist for the same canonical model
+        if mkey not in quotas or (not parsed["disabled"] and ("high" in mid.lower() or quotas[mkey]["disabled"])):
+            quotas[mkey] = parsed
+
+    for a, b in _SHARED_POOL_PARTNERS:
+        if a in quotas and b not in quotas and not quotas[a]["disabled"]:
+            quotas[b] = dict(quotas[a])
+        elif b in quotas and a not in quotas and not quotas[b]["disabled"]:
+            quotas[a] = dict(quotas[b])
+
+    if quotas:
+        _LS_CACHE["quotas"] = quotas
     return _LS_CACHE["quotas"]
 
 
@@ -660,14 +815,41 @@ def stop_desktop_pet():
     return False
 
 
-def collect_stats(requested_conv_id=None):
+def _resolve_active_model(cfg, models_dict):
+    global _LAST_PBTXT_MODEL
+    detected_model = detect_antigravity_active_model()
+    active_model = cfg.get("active_model")
+    if detected_model and detected_model in models_dict and detected_model != _LAST_PBTXT_MODEL:
+        _LAST_PBTXT_MODEL = detected_model
+        if active_model != detected_model:
+            active_model = detected_model
+            cfg["active_model"] = active_model
+            save_json(CONFIG_PATH, cfg)
+    if not active_model or active_model not in models_dict:
+        active_model = detected_model if detected_model in models_dict else "gemini-4-hydrogen"
+    return active_model, detected_model
+
+
+_STATS_LOCK = threading.Lock()
+_STATS_CACHE = {}
+
+
+def collect_stats(requested_conv_id=None, force_refresh=False):
+    cache_key = requested_conv_id or ""
+    with _STATS_LOCK:
+        cached = _STATS_CACHE.get(cache_key)
+        if not force_refresh and cached and (time.time() - cached["ts"] < 1.5):
+            return cached["data"]
+        result = _collect_stats_uncached(requested_conv_id)
+        _STATS_CACHE[cache_key] = {"ts": time.time(), "data": result}
+        return result
+
+
+def _collect_stats_uncached(requested_conv_id=None):
     cfg = get_config()
     pricing = get_pricing()
-    detected_model = detect_antigravity_active_model()
     models_dict = pricing.get("models", {})
-    active_model = cfg.get("active_model")
-    if not active_model or active_model not in models_dict:
-        active_model = detected_model if detected_model in models_dict else "gemini-3.8-flash"
+    active_model, detected_model = _resolve_active_model(cfg, models_dict)
     active_plan = cfg.get("active_plan", "free")
     fallback_info = {"display_name": active_model, "context_window": 1048576, "tiers": [{"hit": 0.075, "miss": 0.75, "out": 3.75}]}
     model_info = models_dict.get(active_model, fallback_info)
@@ -699,10 +881,19 @@ def collect_stats(requested_conv_id=None):
     rpm_count = 0
     tpm_tokens = 0
 
-    featured_models = ["gemini-4-argon", "gemini-3.8-flash", "claude-opus-5-5", "claude-sonnet-5-5"]
-    model_buckets = {mk: {"t5": 0, "tok5": 0, "t7": 0, "tok7": 0} for mk in featured_models}
-    oldest_5h_ts = None
-    oldest_7d_ts = None
+    featured_models = [
+        "gemini-4-hydrogen",
+        "gemini-3.8-flash",
+        "gemini-4-argon",
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+        "gemini-4-carbon",
+    ]
+    pool_buckets = {}
+    for mk in featured_models:
+        pname = models_dict.get(mk, {}).get("quota_pool", mk)
+        if pname not in pool_buckets:
+            pool_buckets[pname] = {"t5": 0, "tok5": 0, "t7": 0, "tok7": 0, "oldest_5h": None, "oldest_7d": None}
 
     for fp in files:
         try:
@@ -714,6 +905,10 @@ def collect_stats(requested_conv_id=None):
         entry = parse_transcript_file(fp)
         if not entry:
             continue
+        cid = entry.get("conv_id") or ""
+        attr_m = get_conv_model(cid) or detected_model
+        pname = models_dict.get(attr_m, {}).get("quota_pool", attr_m)
+        pb = pool_buckets.get(pname)
         for s in entry["steps"]:
             c_str = s["created_at"][:10]
             if c_str in (today_utc_str, today_local_str):
@@ -727,20 +922,17 @@ def collect_stats(requested_conv_id=None):
                 if age <= 60.0:
                     rpm_count += 1
                     tpm_tokens += s["total_tokens"]
-                if age <= 7 * 86400:
-                    if oldest_7d_ts is None or ts < oldest_7d_ts:
-                        oldest_7d_ts = ts
+                if pb is not None and age <= 7 * 86400:
                     eff_tok = s["input_tokens"] + s["output_tokens"] + int(s["cache_read_tokens"] * 0.08)
-                    cid = entry.get("conv_id") or ""
-                    attr_m = get_conv_model(cid) or detected_model
-                    if attr_m in model_buckets:
-                        model_buckets[attr_m]["t7"] += 1
-                        model_buckets[attr_m]["tok7"] += eff_tok
-                        if age <= 5 * 3600:
-                            if oldest_5h_ts is None or ts < oldest_5h_ts:
-                                oldest_5h_ts = ts
-                            model_buckets[attr_m]["t5"] += 1
-                            model_buckets[attr_m]["tok5"] += eff_tok
+                    if pb["oldest_7d"] is None or ts < pb["oldest_7d"]:
+                        pb["oldest_7d"] = ts
+                    pb["t7"] += 1
+                    pb["tok7"] += eff_tok
+                    if age <= 5 * 3600:
+                        if pb["oldest_5h"] is None or ts < pb["oldest_5h"]:
+                            pb["oldest_5h"] = ts
+                        pb["t5"] += 1
+                        pb["tok5"] += eff_tok
 
     today_cost = calculate_cost(t_inp, t_cache, t_out, active_model, pricing)
     today_hit_rate = round((t_cache / (t_inp + t_cache)) * 100, 1) if (t_inp + t_cache) > 0 else 0.0
@@ -820,71 +1012,127 @@ def collect_stats(requested_conv_id=None):
     ]
 
     mult = float(limits_cfg.get("quota_multiplier", 5.0 if active_plan == "tier1" else 1.0))
-    reset_5h_dt = datetime.fromtimestamp((oldest_5h_ts + 5 * 3600) if oldest_5h_ts else (now_ts + 5 * 3600))
-    reset_5h_str = "重置 " + reset_5h_dt.strftime("%H:%M")
-    reset_7d_dt = datetime.fromtimestamp((oldest_7d_ts + 7 * 86400) if oldest_7d_ts else (now_ts + 7 * 86400))
-    reset_7d_str = "重置 " + reset_7d_dt.strftime("%m-%d %H:%M")
 
     live_quotas = fetch_live_antigravity_quotas()
     model_quotas = []
-    active_5h = {"remaining_pct": 100, "used_turns": 0, "limit_turns": 1500, "reset_display": reset_5h_str}
-    active_7d = {"remaining_pct": 100, "used_turns": 0, "limit_turns": 9000, "reset_display": reset_7d_str}
+    active_mq = None
 
     for mk in featured_models:
         minfo = pricing.get("models", {}).get(mk)
         if not minfo:
             continue
-        b = model_buckets.get(mk, {"t5": 0, "tok5": 0, "t7": 0, "tok7": 0})
+        quota_pool = str(minfo.get("quota_pool") or mk)
+        pool_label = str(minfo.get("pool_label") or "独立池")
+        pb = pool_buckets.get(quota_pool, {"t5": 0, "tok5": 0, "t7": 0, "tok7": 0, "oldest_5h": None, "oldest_7d": None})
+
         l5_t = max(1, int(round(int(minfo.get("quota_5h_turns", 1200)) * mult)))
         l5_tok = max(1, int(round(int(minfo.get("quota_5h_tokens", 45000000)) * mult)))
         l7_t = max(1, int(round(int(minfo.get("quota_weekly_turns", 7000)) * mult)))
         l7_tok = max(1, int(round(int(minfo.get("quota_weekly_tokens", 280000000)) * mult)))
 
-        u5 = min(100, max(0, int(round(max((b["t5"] / l5_t) * 100.0, (b["tok5"] / l5_tok) * 100.0)))))
-        u7 = min(100, max(0, int(round(max((b["t7"] / l7_t) * 100.0, (b["tok7"] / l7_tok) * 100.0)))))
+        u5 = min(100, max(0, int(round(max((pb["t5"] / l5_t) * 100.0, (pb["tok5"] / l5_tok) * 100.0)))))
+        u7 = min(100, max(0, int(round(max((pb["t7"] / l7_t) * 100.0, (pb["tok7"] / l7_tok) * 100.0)))))
         rem5 = max(0, 100 - u5)
         rem7 = max(0, 100 - u7)
-        r5_str = reset_5h_str
-        r7_str = reset_7d_str
 
-        weekly_live_reset = next((v["reset"] for v in live_quotas.values() if v.get("is_weekly") and v.get("reset")), reset_7d_str)
-        five_live_reset = next((v["reset"] for v in live_quotas.values() if not v.get("is_weekly") and v.get("reset")), reset_5h_str)
-        r5_str = five_live_reset
-        r7_str = weekly_live_reset
+        r5_dt = datetime.fromtimestamp((pb["oldest_5h"] + 5 * 3600) if pb["oldest_5h"] else (now_ts + 5 * 3600))
+        r7_dt = datetime.fromtimestamp((pb["oldest_7d"] + 7 * 86400) if pb["oldest_7d"] else (now_ts + 7 * 86400))
+        r5_str = "本地估算 " + r5_dt.strftime("%H:%M")
+        r7_str = "本地估算 " + r7_dt.strftime("%m-%d %H:%M")
+
+        disabled = (mk == "gemini-4-carbon")
+        is_weekly = False
+        pct = 0 if disabled else rem5
+        reset_str = "暂不可用 · 需 Ultra" if disabled else r5_str
+        window_label = "Unavailable" if disabled else "本地估算 5h"
+
         if mk in live_quotas:
             lq = live_quotas[mk]
-            if lq.get("is_weekly"):
-                rem7 = int(lq["pct"])
-                r7_str = str(lq["reset"])
-                rem5 = 0 if rem7 == 0 else rem7
-                r5_str = "同周限额"
+            disabled = bool(lq.get("disabled"))
+            is_weekly = bool(lq.get("is_weekly"))
+            pct = int(lq.get("pct", 100))
+            reset_str = str(lq.get("reset", "实时同步"))
+            window_label = str(lq.get("window_label", "多日周期池" if is_weekly else "5h 周期池"))
+            if disabled:
+                rem5 = 0
+                rem7 = 0
+                r5_str = reset_str
+                r7_str = "需 Ultra 订阅"
+            elif is_weekly:
+                rem7 = pct
+                r7_str = reset_str
+                rem5 = pct
+                r5_str = pool_label
             else:
-                rem5 = int(lq["pct"])
-                r5_str = str(lq["reset"])
+                rem5 = pct
+                r5_str = reset_str
+                rem7 = pct
+                r7_str = pool_label
+        elif disabled:
+            rem5 = 0
+            rem7 = 0
+            r5_str = reset_str
+            r7_str = "需 Ultra 订阅"
 
         mq_item = {
             "id": mk,
             "name": minfo.get("display_name", mk),
             "short_name": minfo.get("short_name", mk),
+            "vendor": minfo.get("vendor", "Gemini"),
             "badge": minfo.get("badge", "PRO"),
+            "quota_pool": quota_pool,
+            "pool_label": pool_label,
+            "window_label": window_label,
+            "is_weekly": is_weekly,
+            "disabled": disabled,
+            "remaining_pct": pct,
+            "reset_display": reset_str,
             "is_active": (mk == active_model),
             "five_hour_remaining_pct": rem5,
-            "five_hour_used_turns": b["t5"],
+            "five_hour_used_turns": pb["t5"],
             "five_hour_limit_turns": l5_t,
             "five_hour_reset": r5_str,
             "weekly_remaining_pct": rem7,
-            "weekly_used_turns": b["t7"],
+            "weekly_used_turns": pb["t7"],
             "weekly_limit_turns": l7_t,
-            "weekly_reset": r7_str
+            "weekly_reset": r7_str,
         }
         model_quotas.append(mq_item)
         if mk == active_model:
-            active_5h = {"remaining_pct": rem5, "used_turns": b["t5"], "limit_turns": l5_t, "reset_display": r5_str}
-            active_7d = {"remaining_pct": rem7, "used_turns": b["t7"], "limit_turns": l7_t, "reset_display": r7_str}
+            active_mq = mq_item
+
+    if active_mq is None and model_quotas:
+        active_mq = model_quotas[0]
+
+    active_pool = active_mq["quota_pool"] if active_mq else "flash_hydrogen"
+    companion_target = "gemini-3.8-flash" if active_pool == "argon" else "gemini-4-argon"
+    companion_mq = next((x for x in model_quotas if x["id"] == companion_target and not x["disabled"]), None)
+    if companion_mq is None:
+        companion_mq = next((x for x in model_quotas if x["quota_pool"] != active_pool and not x["disabled"]), active_mq)
+
+    active_5h = {
+        "remaining_pct": active_mq["remaining_pct"] if active_mq else 100,
+        "used_turns": active_mq["five_hour_used_turns"] if active_mq else 0,
+        "limit_turns": active_mq["five_hour_limit_turns"] if active_mq else 1500,
+        "reset_display": active_mq["reset_display"] if active_mq else "实时同步",
+        "pool_label": active_mq["pool_label"] if active_mq else "独立池",
+        "window_label": active_mq["window_label"] if active_mq else "5h 周期池",
+        "disabled": bool(active_mq["disabled"]) if active_mq else False,
+    }
+    active_7d = {
+        "remaining_pct": companion_mq["remaining_pct"] if companion_mq else 100,
+        "used_turns": companion_mq["weekly_used_turns"] if companion_mq else 0,
+        "limit_turns": companion_mq["weekly_limit_turns"] if companion_mq else 9000,
+        "reset_display": companion_mq["reset_display"] if companion_mq else "实时同步",
+        "short_label": "Flash/H" if (companion_mq and companion_mq["quota_pool"] == "flash_hydrogen") else (companion_mq["short_name"] if companion_mq else "Argon"),
+        "pool_label": companion_mq["pool_label"] if companion_mq else "独立池",
+    }
 
     return {
         "five_hour": active_5h,
         "weekly": active_7d,
+        "companion_pool": active_7d,
+        "live_plan_name": _LS_CACHE.get("plan_name", ""),
         "model_quotas": model_quotas,
         "ok": True,
         "config": {
@@ -1068,11 +1316,13 @@ class HakimiSidecarHandler(BaseHTTPRequestHandler):
                 if k in payload:
                     cfg[k] = payload[k]
             save_json(CONFIG_PATH, cfg)
+            with _STATS_LOCK:
+                _STATS_CACHE.clear()
             self.send_response(200)
             self._send_cors()
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.end_headers()
-            self.wfile.write(json.dumps(collect_stats(payload.get("conversationId")), ensure_ascii=False).encode("utf-8"))
+            self.wfile.write(json.dumps(collect_stats(payload.get("conversationId"), force_refresh=True), ensure_ascii=False).encode("utf-8"))
             return
 
         if path == "/api/desktop-pet":

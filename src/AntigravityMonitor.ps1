@@ -1,8 +1,12 @@
 ﻿<#
 .SYNOPSIS
     Antigravity Token Monitor & Live Official Quota Synchronizer
-    Strictly 4 Models: Gemini 4 Argon, Gemini 3.8 Flash, Claude Opus 5.5, Claude Sonnet 5.5
-    Fetches real-time official quotas directly from Antigravity language_server.exe (GetUserStatus RPC)
+    Supports 6 Models across 4 Independent Quota Pools:
+    - Flash/H Shared Pool: Gemini 4 Hydrogen, Gemini 3.8 Flash
+    - Argon Independent Pool: Gemini 4 Argon
+    - Claude Independent Pool: Claude Opus 5.5, Claude Sonnet 5.5
+    - Carbon Independent Pool: Gemini 4 Carbon (Disabled / Ultra)
+    Fetches real-time official quotas directly from Antigravity language_server (GetUserStatus RPC)
 #>
 
 class AntigravityMonitor {
@@ -12,6 +16,7 @@ class AntigravityMonitor {
     [hashtable]$Pricing
     [string]$ActiveModel
     [string]$ActivePlan
+    [string]$LivePlanName = ""
     [string]$LastPbtxtModel = ""
     [string]$CurrentConvId = ""
     [string]$CurrentTranscriptPath = ""
@@ -69,6 +74,11 @@ class AntigravityMonitor {
         UsedPct = 0
         RemainingPct = 100
         ResetDisplay = "重置 --:--"
+        RowLabel = "当前池"
+        PoolLabel = "Flash/H 共享池"
+        WindowLabel = "5h 周期池"
+        Disabled = $false
+        IsWeekly = $false
     }
 
     [hashtable]$Weekly = @{
@@ -79,6 +89,8 @@ class AntigravityMonitor {
         UsedPct = 0
         RemainingPct = 100
         ResetDisplay = "重置 --:--"
+        ShortLabel = "Argon"
+        PoolLabel = "Argon 独立池"
     }
 
     [System.Collections.Generic.List[hashtable]]$ModelQuotas = [System.Collections.Generic.List[hashtable]]::new()
@@ -164,6 +176,8 @@ class AntigravityMonitor {
                         short_name = [string]$v.short_name
                         vendor = [string]$v.vendor
                         badge = [string]$v.badge
+                        quota_pool = $(if ($null -ne $v.quota_pool -and ![string]::IsNullOrEmpty([string]$v.quota_pool)) { [string]$v.quota_pool } else { $k })
+                        pool_label = $(if ($null -ne $v.pool_label -and ![string]::IsNullOrEmpty([string]$v.pool_label)) { [string]$v.pool_label } else { "独立池" })
                         note = [string]$v.note
                         context_window = $(if ($null -ne $v.context_window) { [long]$v.context_window } else { $defaultCtx })
                         quota_5h_turns = $(if ($null -ne $v.quota_5h_turns) { [int]$v.quota_5h_turns } else { 1200 })
@@ -177,7 +191,7 @@ class AntigravityMonitor {
 
             $this.Pricing = @{
                 usd_to_cny = $(if ($null -ne $json.usd_to_cny) { [double]$json.usd_to_cny } else { 7.25 })
-                default_model = $(if ($null -ne $json.default_model) { [string]$json.default_model } else { "gemini-4-argon" })
+                default_model = $(if ($null -ne $json.default_model) { [string]$json.default_model } else { "gemini-4-hydrogen" })
                 context_window = $defaultCtx
                 models = $modelsHash
                 limits = @{
@@ -211,6 +225,46 @@ class AntigravityMonitor {
         }
     }
 
+    [string]MapRawModelKey([string]$rawText) {
+        if ([string]::IsNullOrWhiteSpace($rawText)) { return "" }
+        $t = $rawText.ToLowerInvariant()
+        if ($t -match 'model_placeholder_m525|model_placeholder_m526|model_placeholder_m527|model_placeholder_m528|gemini-4-hydrogen|hydrogen') {
+            return "gemini-4-hydrogen"
+        }
+        if ($t -match 'model_placeholder_m670|gemini-4-carbon|carbon') {
+            return "gemini-4-carbon"
+        }
+        if ($t -match 'model_placeholder_m417|model_placeholder_m418|model_placeholder_m419|gemini-4-argon|argon') {
+            return "gemini-4-argon"
+        }
+        if ($t -match 'model_placeholder_m400|model_placeholder_m401|model_placeholder_m402|model_placeholder_m26|claude-opus|opus') {
+            return "claude-opus-5-5"
+        }
+        if ($t -match 'model_placeholder_m403|model_placeholder_m404|model_placeholder_m405|claude-sonnet|sonnet') {
+            return "claude-sonnet-5-5"
+        }
+        if ($t -match 'model_placeholder_m318|model_placeholder_m319|model_placeholder_m320|gemini-3\.8-flash|flash') {
+            return "gemini-3.8-flash"
+        }
+        return ""
+    }
+
+    [string]FormatCountdown([double]$secsLeft) {
+        if ($secsLeft -le 0) { return "已就绪" }
+        $totalMins = [int][Math]::Floor($secsLeft / 60.0)
+        $hours = [int][Math]::Floor($totalMins / 60.0)
+        $mins = $totalMins % 60
+        if ($hours -ge 24) {
+            $days = [int][Math]::Floor($hours / 24.0)
+            $remH = $hours % 24
+            return "${days}d${remH}h"
+        }
+        if ($hours -gt 0) {
+            return "${hours}h" + $mins.ToString("00") + "m"
+        }
+        return "$([Math]::Max(1, $mins))m"
+    }
+
     [string]DetectAntigravityActiveModel() {
         $pbtxtPath = Join-Path $this.AgyDataPath "antigravity_state.pbtxt"
         if (Test-Path $pbtxtPath) {
@@ -218,51 +272,62 @@ class AntigravityMonitor {
                 $content = Get-Content -LiteralPath $pbtxtPath -Raw -Encoding UTF8
                 if ($content -match 'last_selected_agent_model:\s*(\S+)') {
                     $raw = $Matches[1].Trim('"'' ')
-                    if ($raw -match 'M417|M418|M419|argon') {
-                        return "gemini-4-argon"
-                    }
-                    if ($raw -match 'M318|M319|M320|flash') {
-                        return "gemini-3.8-flash"
-                    }
-                    if ($raw -match 'M400|M401|M402|M26|opus') {
-                        return "claude-opus-5-5"
-                    }
-                    if ($raw -match 'M403|M404|M405|sonnet') {
-                        return "claude-sonnet-5-5"
+                    $mapped = $this.MapRawModelKey($raw)
+                    if (![string]::IsNullOrEmpty($mapped)) {
+                        return $mapped
                     }
                 }
             } catch {}
         }
         if ([string]::IsNullOrEmpty($this.ActiveModel) -or !$this.Pricing.models.ContainsKey($this.ActiveModel)) {
-            return "gemini-4-argon"
+            return "gemini-4-hydrogen"
         }
         return $this.ActiveModel
     }
 
-    [object]CallLanguageServerGetUserStatus([int]$port, [string]$csrf) {
+    [hashtable]CallLanguageServerGetUserStatus([int]$port, [string]$csrf, [string]$preferredScheme) {
+        $schemes = @()
+        if ($preferredScheme -in @("https", "http")) { $schemes += $preferredScheme }
+        foreach ($s in @("https", "http")) {
+            if ($s -notin $schemes) { $schemes += $s }
+        }
         try {
-            $url = "http://127.0.0.1:$port/exa.language_server_pb.LanguageServerService/GetUserStatus"
-            $req = [System.Net.HttpWebRequest]::Create($url)
-            $req.Method = "POST"
-            $req.ContentType = "application/json"
-            $req.Timeout = 1200
-            $req.ReadWriteTimeout = 1200
-            $req.Headers.Add("Connect-Protocol-Version", "1")
-            $req.Headers.Add("x-codeium-csrf-token", $csrf)
-            $bytes = [System.Text.Encoding]::UTF8.GetBytes("{}")
-            $req.ContentLength = $bytes.Length
-            $reqStream = $req.GetRequestStream()
-            $reqStream.Write($bytes, 0, $bytes.Length)
-            $reqStream.Close()
-            $resp = $req.GetResponse()
-            $reader = [System.IO.StreamReader]::new($resp.GetResponseStream(), [System.Text.Encoding]::UTF8)
-            $jsonStr = $reader.ReadToEnd()
-            $reader.Close()
-            $resp.Close()
-            if (![string]::IsNullOrWhiteSpace($jsonStr)) {
-                return ($jsonStr | ConvertFrom-Json)
-            }
+            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.ServicePointManager]::SecurityProtocol
         } catch {}
+        $prevCb = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
+        try {
+            [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { param($sender, $cert, $chain, $errors) return $true }
+            foreach ($sch in $schemes) {
+                try {
+                    $url = "${sch}://127.0.0.1:${port}/exa.language_server_pb.LanguageServerService/GetUserStatus"
+                    $req = [System.Net.HttpWebRequest]::Create($url)
+                    $req.Method = "POST"
+                    $req.ContentType = "application/json"
+                    $req.Timeout = 1000
+                    $req.ReadWriteTimeout = 1000
+                    $req.Headers.Add("Connect-Protocol-Version", "1")
+                    $req.Headers.Add("x-codeium-csrf-token", $csrf)
+                    $bytes = [System.Text.Encoding]::UTF8.GetBytes("{}")
+                    $req.ContentLength = $bytes.Length
+                    $reqStream = $req.GetRequestStream()
+                    $reqStream.Write($bytes, 0, $bytes.Length)
+                    $reqStream.Close()
+                    $resp = $req.GetResponse()
+                    $reader = [System.IO.StreamReader]::new($resp.GetResponseStream(), [System.Text.Encoding]::UTF8)
+                    $jsonStr = $reader.ReadToEnd()
+                    $reader.Close()
+                    $resp.Close()
+                    if (![string]::IsNullOrWhiteSpace($jsonStr)) {
+                        $obj = ($jsonStr | ConvertFrom-Json)
+                        if ($null -ne $obj -and $null -ne $obj.userStatus) {
+                            return @{ Data = $obj; Scheme = $sch }
+                        }
+                    }
+                } catch {}
+            }
+        } finally {
+            [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $prevCb
+        }
         return $null
     }
 
@@ -275,6 +340,7 @@ class AntigravityMonitor {
         $bridgePath = Join-Path $this.ConfigDir "ls_bridge.json"
         $port = 0
         $csrf = ""
+        $scheme = ""
 
         if (Test-Path $bridgePath) {
             try {
@@ -282,77 +348,87 @@ class AntigravityMonitor {
                 if ($null -ne $b.port -and $null -ne $b.csrf) {
                     $port = [int]$b.port
                     $csrf = [string]$b.csrf
+                    if ($null -ne $b.scheme) { $scheme = [string]$b.scheme }
                 }
             } catch {}
         }
 
-        $respObj = $null
+        $rpcHit = $null
         if ($port -gt 0 -and ![string]::IsNullOrEmpty($csrf)) {
-            $respObj = $this.CallLanguageServerGetUserStatus($port, $csrf)
+            $rpcHit = $this.CallLanguageServerGetUserStatus($port, $csrf, $scheme)
         }
 
-        if ($null -eq $respObj) {
+        if ($null -eq $rpcHit) {
             try {
-                $lsProcs = @(Get-CimInstance Win32_Process -Filter "Name='language_server.exe'" -ErrorAction SilentlyContinue)
+                $lsProcs = @(Get-CimInstance Win32_Process -Filter "Name LIKE 'language_server%'" -ErrorAction SilentlyContinue)
                 foreach ($p in $lsProcs) {
                     $cmd = [string]$p.CommandLine
-                    if ($cmd -match '--csrf_token\s+(\S+)') {
+                    if ($cmd -match '--csrf_token[=\s]+([a-fA-F0-9\-]+)') {
                         $candCsrf = $Matches[1].Trim('"'' ')
                         $conns = @(Get-NetTCPConnection -State Listen -OwningProcess $p.ProcessId -ErrorAction SilentlyContinue | Sort-Object LocalPort)
                         foreach ($c in $conns) {
                             $candPort = [int]$c.LocalPort
-                            $respObj = $this.CallLanguageServerGetUserStatus($candPort, $candCsrf)
-                            if ($null -ne $respObj) {
+                            $rpcHit = $this.CallLanguageServerGetUserStatus($candPort, $candCsrf, "")
+                            if ($null -ne $rpcHit) {
                                 $port = $candPort
                                 $csrf = $candCsrf
+                                $scheme = [string]$rpcHit.Scheme
                                 try {
                                     if (!(Test-Path $this.ConfigDir)) { New-Item -ItemType Directory -Path $this.ConfigDir -Force | Out-Null }
-                                    @{ port = $port; csrf = $csrf; pid = $p.ProcessId } | ConvertTo-Json | Set-Content -LiteralPath $bridgePath -Encoding UTF8 -Force
+                                    @{ scheme = $scheme; port = $port; csrf = $csrf; pid = $p.ProcessId } | ConvertTo-Json | Set-Content -LiteralPath $bridgePath -Encoding UTF8 -Force
                                 } catch {}
                                 break
                             }
                         }
                     }
-                    if ($null -ne $respObj) { break }
+                    if ($null -ne $rpcHit) { break }
                 }
             } catch {}
         }
 
-        if ($null -eq $respObj -or $null -eq $respObj.userStatus) {
+        if ($null -eq $rpcHit -or $null -eq $rpcHit.Data -or $null -eq $rpcHit.Data.userStatus) {
             return $this.CachedLiveQuotas
         }
 
+        $respObj = $rpcHit.Data
         $result = @{
             PlanName = "Pro"
             Models = @{}
-            WeeklyResetDisplay = ""
-            FiveHourResetDisplay = ""
         }
 
         try {
             if ($null -ne $respObj.userStatus.planStatus -and $null -ne $respObj.userStatus.planStatus.planInfo -and $null -ne $respObj.userStatus.planStatus.planInfo.planName) {
                 $result.PlanName = [string]$respObj.userStatus.planStatus.planInfo.planName
             }
+            $this.LivePlanName = $result.PlanName
             $configs = $respObj.userStatus.cascadeModelConfigData.clientModelConfigs
             foreach ($cfg in $configs) {
+                $label = [string]$cfg.label
                 $mid = [string]$cfg.modelId
                 $ph = ""
                 if ($null -ne $cfg.modelOrAlias -and $null -ne $cfg.modelOrAlias.model) {
                     $ph = [string]$cfg.modelOrAlias.model
                 }
-                $targetKey = ""
-                if ($mid -match '^gemini-4-argon' -or $ph -in @('MODEL_PLACEHOLDER_M417', 'MODEL_PLACEHOLDER_M418', 'MODEL_PLACEHOLDER_M419')) {
-                    $targetKey = "gemini-4-argon"
-                } elseif ($mid -match '^gemini-3\.8-flash' -or $ph -in @('MODEL_PLACEHOLDER_M318', 'MODEL_PLACEHOLDER_M319', 'MODEL_PLACEHOLDER_M320')) {
-                    $targetKey = "gemini-3.8-flash"
-                } elseif ($mid -match '^claude-opus-5-5' -or $ph -in @('MODEL_PLACEHOLDER_M400', 'MODEL_PLACEHOLDER_M401', 'MODEL_PLACEHOLDER_M402', 'MODEL_PLACEHOLDER_M26')) {
-                    $targetKey = "claude-opus-5-5"
-                } elseif ($mid -match '^claude-sonnet-5-5' -or $ph -in @('MODEL_PLACEHOLDER_M403', 'MODEL_PLACEHOLDER_M404', 'MODEL_PLACEHOLDER_M405')) {
-                    $targetKey = "claude-sonnet-5-5"
-                }
+                $targetKey = $this.MapRawModelKey("$ph $label $mid")
                 if ([string]::IsNullOrEmpty($targetKey)) { continue }
 
+                $isDisabled = ($null -ne $cfg.disabled -and [bool]$cfg.disabled)
+                $tagTitle = if ($null -ne $cfg.tagTitle) { [string]$cfg.tagTitle } else { "" }
                 $q = $cfg.quotaInfo
+                $hasQuotaFields = ($null -ne $q) -and ($null -ne $q.remainingFraction -or ($null -ne $q.resetTime -and ![string]::IsNullOrEmpty([string]$q.resetTime)))
+
+                if ($isDisabled -and !$hasQuotaFields) {
+                    $result.Models[$targetKey] = @{
+                        Disabled = $true
+                        IsWeeklyWindow = $false
+                        RemainingPct = 0
+                        UsedPct = 100
+                        WindowLabel = $(if ($tagTitle) { $tagTitle } else { "Unavailable" })
+                        ResetDisplay = "暂不可用 · 需 Ultra"
+                    }
+                    continue
+                }
+
                 $remPct = 100
                 $resetUtc = $nowUtc.AddHours(5)
                 $hasReset = $false
@@ -373,28 +449,45 @@ class AntigravityMonitor {
                     }
                 }
                 $remPct = [Math]::Min(100, [Math]::Max(0, $remPct))
-                $hoursLeft = ($resetUtc - $nowUtc).TotalHours
+                $secsLeft = ($resetUtc - $nowUtc).TotalSeconds
+                $hoursLeft = $secsLeft / 3600.0
                 if ($hoursLeft -gt 24.0) {
                     $isWeeklyWindow = $true
                 }
                 $localReset = $resetUtc.ToLocalTime()
-                $resetDisp = if ($isWeeklyWindow) { "重置 " + $localReset.ToString("MM-dd HH:mm") } else { "重置 " + $localReset.ToString("HH:mm") }
-
-                if ($isWeeklyWindow -and [string]::IsNullOrEmpty($result.WeeklyResetDisplay)) {
-                    $result.WeeklyResetDisplay = $resetDisp
-                } elseif (!$isWeeklyWindow -and [string]::IsNullOrEmpty($result.FiveHourResetDisplay)) {
-                    $result.FiveHourResetDisplay = $resetDisp
+                $cd = $this.FormatCountdown($secsLeft)
+                $resetDisp = if ($secsLeft -le 0) {
+                    "已就绪 · 随时重置"
+                } elseif ($isWeeklyWindow) {
+                    "重置 " + $localReset.ToString("MM-dd HH:mm") + " ($cd)"
+                } else {
+                    "重置 " + $localReset.ToString("HH:mm:ss") + " ($cd)"
                 }
+                $winLabel = if ($isWeeklyWindow) { "多日周期池" } else { "5h 周期池" }
 
-                if (!$result.Models.ContainsKey($targetKey) -or $mid -match '-high$') {
+                if (!$result.Models.ContainsKey($targetKey) -or (!$isDisabled -and ($mid -match '-high$' -or $result.Models[$targetKey].Disabled))) {
                     $result.Models[$targetKey] = @{
+                        Disabled = $isDisabled
                         RemainingPct = $remPct
                         UsedPct = (100 - $remPct)
                         ResetUtc = $resetUtc
                         ResetDisplay = $resetDisp
                         IsWeeklyWindow = $isWeeklyWindow
+                        WindowLabel = $winLabel
                         HoursLeft = $hoursLeft
                     }
+                }
+            }
+
+            foreach ($pair in @(
+                @("gemini-4-hydrogen", "gemini-3.8-flash"),
+                @("claude-opus-5-5", "claude-sonnet-5-5")
+            )) {
+                $a = $pair[0]; $b = $pair[1]
+                if ($result.Models.ContainsKey($a) -and !$result.Models.ContainsKey($b) -and !$result.Models[$a].Disabled) {
+                    $result.Models[$b] = $result.Models[$a].Clone()
+                } elseif ($result.Models.ContainsKey($b) -and !$result.Models.ContainsKey($a) -and !$result.Models[$b].Disabled) {
+                    $result.Models[$a] = $result.Models[$b].Clone()
                 }
             }
         } catch {}
@@ -416,22 +509,10 @@ class AntigravityMonitor {
                 $bytes = [System.IO.File]::ReadAllBytes($dbPath)
                 $chunkLen = [Math]::Min(120000, $bytes.Length)
                 $latin1 = [System.Text.Encoding]::GetEncoding("ISO-8859-1").GetString($bytes, [Math]::Max(0, $bytes.Length - $chunkLen), $chunkLen)
-
-                if ($latin1 -match 'MODEL_PLACEHOLDER_M417|MODEL_PLACEHOLDER_M418|MODEL_PLACEHOLDER_M419|gemini-4-argon|argon') {
-                    $this.ConvModelCache[$convId] = "gemini-4-argon"
-                    return "gemini-4-argon"
-                }
-                if ($latin1 -match 'MODEL_PLACEHOLDER_M400|MODEL_PLACEHOLDER_M401|MODEL_PLACEHOLDER_M402|MODEL_PLACEHOLDER_M26|claude-opus') {
-                    $this.ConvModelCache[$convId] = "claude-opus-5-5"
-                    return "claude-opus-5-5"
-                }
-                if ($latin1 -match 'MODEL_PLACEHOLDER_M403|MODEL_PLACEHOLDER_M404|MODEL_PLACEHOLDER_M405|claude-sonnet') {
-                    $this.ConvModelCache[$convId] = "claude-sonnet-5-5"
-                    return "claude-sonnet-5-5"
-                }
-                if ($latin1 -match 'MODEL_PLACEHOLDER_M318|MODEL_PLACEHOLDER_M319|MODEL_PLACEHOLDER_M320|gemini-3\.8-flash|flash') {
-                    $this.ConvModelCache[$convId] = "gemini-3.8-flash"
-                    return "gemini-3.8-flash"
+                $mapped = $this.MapRawModelKey($latin1)
+                if (![string]::IsNullOrEmpty($mapped)) {
+                    $this.ConvModelCache[$convId] = $mapped
+                    return $mapped
                 }
             } catch {}
         }
@@ -532,10 +613,32 @@ class AntigravityMonitor {
 
     [bool]SyncFromSidecar() {
         try {
-            $url = "http://127.0.0.1:54716/api/stats"
+            $scPort = 54716
+            $scToken = ""
+            foreach ($candInfo in @(
+                (Join-Path $this.AgyDataPath "sidecar_data\gemini-hakimi-widget\hakimi_panel\data\server_info.json"),
+                (Join-Path $this.AgyDataPath "sidecar_data\hakimi_panel\data\server_info.json")
+            )) {
+                if (Test-Path $candInfo) {
+                    try {
+                        $sInfo = Get-Content -LiteralPath $candInfo -Raw -Encoding UTF8 | ConvertFrom-Json
+                        if ($null -ne $sInfo.port -and [int]$sInfo.port -gt 0) {
+                            $scPort = [int]$sInfo.port
+                        }
+                        if ($null -ne $sInfo.token) {
+                            $scToken = [string]$sInfo.token
+                        }
+                        break
+                    } catch {}
+                }
+            }
+            $url = "http://127.0.0.1:${scPort}/api/stats"
             $req = [System.Net.WebRequest]::CreateHttp($url)
-            $req.Timeout = 800
+            $req.Timeout = 4500
             $req.Method = "GET"
+            if (![string]::IsNullOrEmpty($scToken)) {
+                $req.Headers.Add("X-Sidecar-Token", $scToken)
+            }
             $resp = $req.GetResponse()
             $stream = $resp.GetResponseStream()
             $reader = [System.IO.StreamReader]::new($stream, [System.Text.Encoding]::UTF8)
@@ -546,6 +649,20 @@ class AntigravityMonitor {
 
             $data = $jsonStr | ConvertFrom-Json
             if ($null -eq $data -or !$data.ok) { return $false }
+
+            # 0. Sync ActiveModel / Plan from Sidecar SSOT
+            if ($data.config) {
+                $scModel = [string]$data.config.active_model
+                $scPlan = [string]$data.config.active_plan
+                if (![string]::IsNullOrEmpty($scModel) -and $this.Pricing.models.ContainsKey($scModel) -and ($scModel -ne $this.ActiveModel -or (![string]::IsNullOrEmpty($scPlan) -and $scPlan -ne $this.ActivePlan))) {
+                    $this.ActiveModel = $scModel
+                    if (![string]::IsNullOrEmpty($scPlan)) { $this.ActivePlan = $scPlan }
+                    $this.UpdateModelLimits()
+                }
+            }
+            if ($null -ne $data.live_plan_name -and ![string]::IsNullOrEmpty([string]$data.live_plan_name)) {
+                $this.LivePlanName = [string]$data.live_plan_name
+            }
 
             # 1. Sync RateLimits (Single Source of Truth)
             if ($data.rate_limits) {
@@ -603,27 +720,49 @@ class AntigravityMonitor {
                 $this.Today.SavingsUSD = [double]$td.savings_usd
             }
 
-            # 5. Sync FiveHour & Weekly
+            # 5. Sync FiveHour (Active Pool) & Weekly (Companion Pool)
             if ($data.five_hour) {
                 $this.FiveHour.RemainingPct = [int]$data.five_hour.remaining_pct
                 $this.FiveHour.ResetDisplay = [string]$data.five_hour.reset_display
+                $this.FiveHour.PoolLabel = if ($null -ne $data.five_hour.pool_label) { [string]$data.five_hour.pool_label } else { "独立池" }
+                $this.FiveHour.WindowLabel = if ($null -ne $data.five_hour.window_label) { [string]$data.five_hour.window_label } else { "5h 周期池" }
+                $this.FiveHour.Disabled = ($null -ne $data.five_hour.disabled -and [bool]$data.five_hour.disabled)
+                $this.FiveHour.RowLabel = if ($this.FiveHour.Disabled) { "未解锁" } elseif ($this.FiveHour.WindowLabel -like "*多日*") { "多日池" } else { "5h 池" }
             }
-            if ($data.weekly) {
-                $this.Weekly.RemainingPct = [int]$data.weekly.remaining_pct
-                $this.Weekly.ResetDisplay = [string]$data.weekly.reset_display
+            $comp = if ($null -ne $data.companion_pool) { $data.companion_pool } else { $data.weekly }
+            if ($comp) {
+                $this.Weekly.RemainingPct = [int]$comp.remaining_pct
+                $this.Weekly.ResetDisplay = [string]$comp.reset_display
+                $this.Weekly.ShortLabel = if ($null -ne $comp.short_label -and ![string]::IsNullOrEmpty([string]$comp.short_label)) { [string]$comp.short_label } else { "Argon" }
+                $this.Weekly.PoolLabel = if ($null -ne $comp.pool_label) { [string]$comp.pool_label } else { "独立池" }
             }
 
-            # 6. Sync ModelQuotas
+            # 6. Sync ModelQuotas (Canonical Keys Matching HakimiWidget.ps1)
             if ($data.model_quotas) {
                 $this.ModelQuotas.Clear()
                 foreach ($mq in $data.model_quotas) {
+                    $mId = [string]$mq.id
+                    $mInfo = if ($this.Pricing -and $this.Pricing.models.ContainsKey($mId)) { $this.Pricing.models[$mId] } else { $null }
+                    $remVal = if ($null -ne $mq.remaining_pct) { [int]$mq.remaining_pct } else { [int]$mq.five_hour_remaining_pct }
+                    $resVal = if ($null -ne $mq.reset_display -and ![string]::IsNullOrEmpty([string]$mq.reset_display)) { [string]$mq.reset_display } else { [string]$mq.five_hour_reset }
                     $this.ModelQuotas.Add(@{
-                        Id = [string]$mq.id
-                        Name = [string]$mq.name
-                        Vendor = if ($mq.id -like "claude*") { "Claude" } else { "Gemini" }
+                        Key = $mId
+                        DisplayName = [string]$mq.name
+                        ShortName = if ($null -ne $mq.short_name -and ![string]::IsNullOrEmpty([string]$mq.short_name)) { [string]$mq.short_name } elseif ($mInfo) { [string]$mInfo.short_name } else { [string]$mq.name }
+                        Vendor = if ($null -ne $mq.vendor -and ![string]::IsNullOrEmpty([string]$mq.vendor)) { [string]$mq.vendor } elseif ($mId -like "claude*") { "Claude" } else { "Gemini" }
+                        Badge = if ($null -ne $mq.badge) { [string]$mq.badge } else { "PRO" }
+                        QuotaPool = if ($null -ne $mq.quota_pool -and ![string]::IsNullOrEmpty([string]$mq.quota_pool)) { [string]$mq.quota_pool } elseif ($mInfo) { [string]$mInfo.quota_pool } else { $mId }
+                        PoolLabel = if ($null -ne $mq.pool_label -and ![string]::IsNullOrEmpty([string]$mq.pool_label)) { [string]$mq.pool_label } elseif ($mInfo) { [string]$mInfo.pool_label } else { "独立池" }
+                        WindowLabel = if ($null -ne $mq.window_label -and ![string]::IsNullOrEmpty([string]$mq.window_label)) { [string]$mq.window_label } else { "5h 周期池" }
+                        IsWeekly = ($null -ne $mq.is_weekly -and [bool]$mq.is_weekly)
+                        Disabled = ($null -ne $mq.disabled -and [bool]$mq.disabled)
+                        RemainingPct = $remVal
+                        ResetDisplay = $resVal
                         IsActive = [bool]$mq.is_active
-                        FiveHourPct = [int]$mq.five_hour_remaining_pct
-                        WeeklyPct = [int]$mq.weekly_remaining_pct
+                        FiveHourUsedTurns = if ($null -ne $mq.five_hour_used_turns) { [int]$mq.five_hour_used_turns } else { 0 }
+                        FiveHourLimitTurns = if ($null -ne $mq.five_hour_limit_turns) { [int]$mq.five_hour_limit_turns } else { 1500 }
+                        FiveHourRemainingPct = [int]$mq.five_hour_remaining_pct
+                        WeeklyRemainingPct = [int]$mq.weekly_remaining_pct
                         FiveHourReset = [string]$mq.five_hour_reset
                         WeeklyReset = [string]$mq.weekly_reset
                     })
@@ -766,18 +905,26 @@ class AntigravityMonitor {
         $this.RecentRequests.Clear()
 
         $realModels = @(
-            "gemini-4-argon",
+            "gemini-4-hydrogen",
             "gemini-3.8-flash",
+            "gemini-4-argon",
             "claude-opus-5-5",
-            "claude-sonnet-5-5"
+            "claude-sonnet-5-5",
+            "gemini-4-carbon"
         )
-        $modelBuckets = @{}
+        $poolBuckets = @{}
         foreach ($mk in $realModels) {
-            $modelBuckets[$mk] = @{
-                Turns5h = 0
-                Tokens5h = 0L
-                Turns7d = 0
-                Tokens7d = 0L
+            $pname = if ($this.Pricing -and $this.Pricing.models.ContainsKey($mk)) { [string]$this.Pricing.models[$mk].quota_pool } else { $mk }
+            if ([string]::IsNullOrEmpty($pname)) { $pname = $mk }
+            if (!$poolBuckets.ContainsKey($pname)) {
+                $poolBuckets[$pname] = @{
+                    Turns5h = 0
+                    Tokens5h = 0L
+                    Turns7d = 0
+                    Tokens7d = 0L
+                    Oldest5h = [datetime]::MaxValue
+                    Oldest7d = [datetime]::MaxValue
+                }
             }
         }
 
@@ -789,8 +936,9 @@ class AntigravityMonitor {
 
                 $cid = $f.Directory.Parent.Parent.Name
                 $convModel = $this.GetConversationModel($cid)
-                if (!$modelBuckets.ContainsKey($convModel)) {
-                    $convModel = "gemini-3.8-flash"
+                $pname = if ($this.Pricing -and $this.Pricing.models.ContainsKey($convModel)) { [string]$this.Pricing.models[$convModel].quota_pool } else { "flash_hydrogen" }
+                if (!$poolBuckets.ContainsKey($pname)) {
+                    $pname = "flash_hydrogen"
                 }
 
                 foreach ($line in $lines) {
@@ -823,13 +971,13 @@ class AntigravityMonitor {
                     }
 
                     if ($stUtc -ge $cutoff7d) {
-                        if ($stUtc -lt $oldest7d) { $oldest7d = $stUtc }
-                        $mb = $modelBuckets[$convModel]
+                        $mb = $poolBuckets[$pname]
+                        if ($stUtc -lt $mb.Oldest7d) { $mb.Oldest7d = $stUtc }
                         $mb.Turns7d += 1
                         $mb.Tokens7d += $sTot
 
                         if ($stUtc -ge $cutoff5h) {
-                            if ($stUtc -lt $oldest5h) { $oldest5h = $stUtc }
+                            if ($stUtc -lt $mb.Oldest5h) { $mb.Oldest5h = $stUtc }
                             $mb.Turns5h += 1
                             $mb.Tokens5h += $sTot
                         }
@@ -850,23 +998,12 @@ class AntigravityMonitor {
         $this.Today.SavingsCNY = $tc.SavingsCNY
         $this.RateLimits.CurrentRPD = $tTurns
 
-        # Fetch official live quotas from Antigravity language_server.exe
+        # Fetch official live quotas from Antigravity language_server (HTTPS + HTTP)
         $live = $this.FetchLiveAntigravityQuotas()
 
         $mult = 1.0
         if ($this.Pricing -and $this.Pricing.limits -and $this.Pricing.limits[$this.ActivePlan]) {
             $mult = [double]$this.Pricing.limits[$this.ActivePlan].quota_multiplier
-        }
-
-        $reset5hTime = if ($oldest5h -ne [datetime]::MaxValue) { $oldest5h.AddHours(5) } else { $nowUtc.AddHours(5) }
-        $reset7dTime = if ($oldest7d -ne [datetime]::MaxValue) { $oldest7d.AddDays(7) } else { $nowUtc.AddDays(7) }
-        $defaultReset5hStr = "重置 " + $reset5hTime.ToLocalTime().ToString("HH:mm")
-        $defaultReset7dStr = "重置 " + $reset7dTime.ToLocalTime().ToString("MM-dd HH:mm")
-        if ($null -ne $live -and ![string]::IsNullOrEmpty($live.WeeklyResetDisplay)) {
-            $defaultReset7dStr = $live.WeeklyResetDisplay
-        }
-        if ($null -ne $live -and ![string]::IsNullOrEmpty($live.FiveHourResetDisplay)) {
-            $defaultReset5hStr = $live.FiveHourResetDisplay
         }
 
         $this.ModelQuotas.Clear()
@@ -876,7 +1013,9 @@ class AntigravityMonitor {
             foreach ($mk in $realModels) {
                 if (!$this.Pricing.models.ContainsKey($mk)) { continue }
                 $minfo = $this.Pricing.models[$mk]
-                $b = $modelBuckets[$mk]
+                $qPool = if ($minfo.quota_pool) { [string]$minfo.quota_pool } else { $mk }
+                $pLabel = if ($minfo.pool_label) { [string]$minfo.pool_label } else { "独立池" }
+                $b = $poolBuckets[$qPool]
                 $mLim5hTurns = [int]([Math]::Round($minfo.quota_5h_turns * $mult))
                 $mLim7dTurns = [int]([Math]::Round($minfo.quota_weekly_turns * $mult))
 
@@ -884,22 +1023,33 @@ class AntigravityMonitor {
                 $localUsed7d = [int][Math]::Min(100, [Math]::Max(0, [Math]::Round($(if ($mLim7dTurns -gt 0) { ($b.Turns7d / [double]$mLim7dTurns) * 100.0 } else { 0.0 }))))
                 $rem5h = [Math]::Max(0, 100 - $localUsed5h)
                 $rem7d = [Math]::Max(0, 100 - $localUsed7d)
-                $res5h = $defaultReset5hStr
-                $res7d = $defaultReset7dStr
+                $r5Dt = if ($b.Oldest5h -ne [datetime]::MaxValue) { $b.Oldest5h.AddHours(5) } else { $nowUtc.AddHours(5) }
+                $r7Dt = if ($b.Oldest7d -ne [datetime]::MaxValue) { $b.Oldest7d.AddDays(7) } else { $nowUtc.AddDays(7) }
+                $res5h = "本地估算 " + $r5Dt.ToLocalTime().ToString("HH:mm")
+                $res7d = "本地估算 " + $r7Dt.ToLocalTime().ToString("MM-dd HH:mm")
+
+                $isDis = ($mk -eq "gemini-4-carbon")
+                $isWeekly = $false
+                $pct = if ($isDis) { 0 } else { $rem5h }
+                $resDisp = if ($isDis) { "暂不可用 · 需 Ultra" } else { $res5h }
+                $winLabel = if ($isDis) { "Unavailable" } else { "本地估算 5h" }
 
                 if ($null -ne $live -and $live.Models.ContainsKey($mk)) {
                     $lq = $live.Models[$mk]
-                    if ($lq.IsWeeklyWindow) {
-                        # Official Weekly Quota (e.g. Gemini 4 Argon: 55% remaining, resets 10-28 20:26)
-                        $rem7d = [int]$lq.RemainingPct
-                        $res7d = [string]$lq.ResetDisplay
-                        $rem5h = $rem7d
-                        $res5h = "同周限额"
+                    $isDis = [bool]$lq.Disabled
+                    $isWeekly = [bool]$lq.IsWeeklyWindow
+                    $pct = [int]$lq.RemainingPct
+                    $resDisp = [string]$lq.ResetDisplay
+                    $winLabel = [string]$lq.WindowLabel
+                    if ($isDis) {
+                        $rem5h = 0; $rem7d = 0; $res5h = $resDisp; $res7d = "需 Ultra 订阅"
+                    } elseif ($isWeekly) {
+                        $rem7d = $pct; $res7d = $resDisp; $rem5h = $pct; $res5h = $pLabel
                     } else {
-                        # Official 5-Hour Quota (e.g. Gemini 3.8 Flash: 94% resets 03:29; Claude Opus/Sonnet: 0% resets 00:37)
-                        $rem5h = [int]$lq.RemainingPct
-                        $res5h = [string]$lq.ResetDisplay
+                        $rem5h = $pct; $res5h = $resDisp; $rem7d = $pct; $res7d = $pLabel
                     }
+                } elseif ($isDis) {
+                    $rem5h = 0; $rem7d = 0; $res5h = $resDisp; $res7d = "需 Ultra 订阅"
                 }
 
                 $mqEntry = @{
@@ -908,6 +1058,13 @@ class AntigravityMonitor {
                     ShortName = $minfo.short_name
                     Vendor = $minfo.vendor
                     Badge = $minfo.badge
+                    QuotaPool = $qPool
+                    PoolLabel = $pLabel
+                    WindowLabel = $winLabel
+                    IsWeekly = $isWeekly
+                    Disabled = $isDis
+                    RemainingPct = $pct
+                    ResetDisplay = $resDisp
                     IsActive = ($mk -eq $this.ActiveModel)
                     FiveHourUsedTurns = $b.Turns5h
                     FiveHourLimitTurns = $mLim5hTurns
@@ -934,15 +1091,33 @@ class AntigravityMonitor {
         if ($null -ne $activeMq) {
             $this.FiveHour.Turns = $activeMq.FiveHourUsedTurns
             $this.FiveHour.LimitTurns = $activeMq.FiveHourLimitTurns
-            $this.FiveHour.UsedPct = $activeMq.FiveHourUsedPct
-            $this.FiveHour.RemainingPct = $activeMq.FiveHourRemainingPct
-            $this.FiveHour.ResetDisplay = $activeMq.FiveHourReset
+            $this.FiveHour.UsedPct = (100 - $activeMq.RemainingPct)
+            $this.FiveHour.RemainingPct = $activeMq.RemainingPct
+            $this.FiveHour.ResetDisplay = $activeMq.ResetDisplay
+            $this.FiveHour.PoolLabel = $activeMq.PoolLabel
+            $this.FiveHour.WindowLabel = $activeMq.WindowLabel
+            $this.FiveHour.Disabled = $activeMq.Disabled
+            $this.FiveHour.RowLabel = if ($activeMq.Disabled) { "未解锁" } elseif ($activeMq.IsWeekly) { "多日池" } else { "5h 池" }
 
-            $this.Weekly.Turns = $activeMq.WeeklyUsedTurns
-            $this.Weekly.LimitTurns = $activeMq.WeeklyLimitTurns
-            $this.Weekly.UsedPct = $activeMq.WeeklyUsedPct
-            $this.Weekly.RemainingPct = $activeMq.WeeklyRemainingPct
-            $this.Weekly.ResetDisplay = $activeMq.WeeklyReset
+            $compKey = if ($activeMq.QuotaPool -eq "argon") { "gemini-3.8-flash" } else { "gemini-4-argon" }
+            $compMq = $null
+            foreach ($item in $this.ModelQuotas) {
+                if ($item.Key -eq $compKey -and !$item.Disabled) { $compMq = $item; break }
+            }
+            if ($null -eq $compMq) {
+                foreach ($item in $this.ModelQuotas) {
+                    if ($item.QuotaPool -ne $activeMq.QuotaPool -and !$item.Disabled) { $compMq = $item; break }
+                }
+            }
+            if ($null -eq $compMq) { $compMq = $activeMq }
+
+            $this.Weekly.Turns = $compMq.WeeklyUsedTurns
+            $this.Weekly.LimitTurns = $compMq.WeeklyLimitTurns
+            $this.Weekly.UsedPct = (100 - $compMq.RemainingPct)
+            $this.Weekly.RemainingPct = $compMq.RemainingPct
+            $this.Weekly.ResetDisplay = $compMq.ResetDisplay
+            $this.Weekly.ShortLabel = if ($compMq.QuotaPool -eq "flash_hydrogen") { "Flash/H" } else { [string]$compMq.ShortName }
+            $this.Weekly.PoolLabel = $compMq.PoolLabel
         }
     }
 

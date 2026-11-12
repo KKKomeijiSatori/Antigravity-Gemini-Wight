@@ -154,4 +154,19 @@
 - **数据总线单一事实来源 (SSOT) 收敛**：
   - 在 [`src/AntigravityMonitor.ps1`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/AntigravityMonitor.ps1) 中重构数据获取层：桌宠轮询优先通过本地 REST API（`http://127.0.0.1:54716/api/stats`）极速拉取 Sidecar 聚合数据，两端指标（Token、费用、5h/周配额、RPM/TPM/TPS）永久 100% 保持严格一致，同时避免重复扫描磁盘日志与重复进程端口探测。保留离线独立启动降级容灾能力。
 
+---
+
+### 12. 新增 Gemini 4 Hydrogen / 4 Carbon 与独立额度池重置时间彻底修复 (v3.1)
+- **新增反重力新模型支持**：
+  - **Gemini 4 Hydrogen** (`gemini-4-hydrogen` / `MODEL_PLACEHOLDER_M525~M528`)：在 [`src/Pricing.json`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/Pricing.json)、[`sidecars/hakimi_panel/server.py`](file:///e:/Antigravity/Gemini-Hakimi-Widget/sidecars/hakimi_panel/server.py) 与 [`src/AntigravityMonitor.ps1`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/AntigravityMonitor.ps1) 中正式接入，识别为与 **Gemini 3.8 Flash** 共用 **`Flash/H 共享池`**。
+  - **Gemini 4 Carbon** (`gemini-4-carbon` / `MODEL_PLACEHOLDER_M670`)：支持识别 `GetUserStatus` 返回的 `disabled: true` 与 `Unavailable` 状态；在账号未解锁 Ultra 权限时清晰展示“暂不可用 · 需 Ultra / 未解锁”徽标，若未来权限开启且下发 `quotaInfo` 将自动无缝切换为实时额度。
+- **根因定位与修复 A — ConnectRPC HTTPS 自签名协议与陈旧桥接缓存**：
+  - 排查实测发现新版 `language_server.exe` 启动参数使用 `--https_server_port 0`，在随机本地端口（如 `14157`）暴露 **HTTPS** ConnectRPC 服务（使用自签名证书），而旧版代码仅尝试 `http://` 请求，且只要旧 `ls_bridge.json` 文件存在就不会重新扫描活跃进程，导致全部模型退回本地日志估算。
+  - 修复方案：在 [`sidecars/hakimi_panel/server.py`](file:///e:/Antigravity/Gemini-Hakimi-Widget/sidecars/hakimi_panel/server.py) 与 [`src/AntigravityMonitor.ps1`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/AntigravityMonitor.ps1) 中同时支持 **HTTPS（允许本地自签名证书）+ HTTP** 双协议探测；一旦缓存端点失效，立即穿透扫描当前活跃的 `language_server*` 进程并自动重写最新 `config/ls_bridge.json`。
+- **根因定位与修复 B — 跨额度池重置时间交叉污染与 `SyncFromSidecar()` 字段错配**：
+  - 修复了旧版 `server.py` 与 `AntigravityMonitor.ps1` 全局抓取首个 `weekly_live_reset` / `five_live_reset` 并覆盖写入所有模型卡片的严重 Bug——彻底杜绝 **Flash/Hydrogen**、**Argon 独立池** 与 **Claude 独立池** 互相串用重置时间或伪造重复进度条的问题。
+  - 重构多端展示 UI（[`sidecars/hakimi_panel/ui.html`](file:///e:/Antigravity/Gemini-Hakimi-Widget/sidecars/hakimi_panel/ui.html)、[`src/WidgetWindow.xaml`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/WidgetWindow.xaml)、[`src/HakimiWidget.ps1`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/HakimiWidget.ps1)）：每张模型卡片改为独立单池展示（带清晰池标识胶囊与精确到秒/天的独立倒计时），桌宠头顶气泡双行改为主池与伴生独立池对比。
+  - 修复了 `AntigravityMonitor.ps1` `SyncFromSidecar()` 同步 `$ModelQuotas` 字典键名（`Key`/`DisplayName`/`FiveHourRemainingPct` 等）与 `HakimiWidget.ps1` 不一致导致的字段错配问题。
+
+
 

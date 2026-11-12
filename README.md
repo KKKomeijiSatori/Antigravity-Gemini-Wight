@@ -6,7 +6,7 @@
   <p>
     <a href="https://github.com/KKKomeijiSatori/Antigravity-Gemini-Wight"><img src="https://img.shields.io/badge/GitHub-Antigravity--Gemini--Wight-blue?logo=github" alt="GitHub Repo"></a>
     <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT"></a>
-    <img src="https://img.shields.io/badge/version-3.0-pink.svg" alt="Version 3.0">
+    <img src="https://img.shields.io/badge/version-3.1-pink.svg" alt="Version 3.1">
     <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Antigravity-purple.svg" alt="Platform: Windows / Antigravity">
     <img src="https://img.shields.io/badge/RPC-LanguageServer%20Live-emerald.svg" alt="ConnectRPC Live">
   </p>
@@ -54,17 +54,19 @@
 
 ## ✨ 核心特性
 
-### 1. 直连 Antigravity 官方 ConnectRPC (`GetUserStatus`)
-- **100% 真实云端额度**：无需手动输入 API Key，自动发现本地 `language_server.exe` 的 CSRF Token 与端口。
-- **5 小时与每周滚动双窗口**：精确捕获每个模型的 `quotaInfo.remainingFraction` 与 `quotaInfo.resetTime`，自动转换为本地时间倒计时。
-- **零值省略精确判定**：当模型额度用尽（`0%`）时，Protobuf3 JSON 仅返回 `resetTime`，插件精准识别为 `0%`（杜绝旧版误判为 `100%` 的问题）。
+### 1. 直连 Antigravity 官方 ConnectRPC (`GetUserStatus` HTTPS/HTTP 双栈)
+- **100% 真实云端额度**：无需手动输入 API Key，自动发现本地 `language_server.exe` 的 CSRF Token 与 HTTPS/HTTP 监听端口（支持本地自签名 TLS 证书）。
+- **独立额度池精确隔离与倒计时**：严格区分 **Flash/H 共享池**、**Argon 独立池**、**Claude 独立池** 与 **Carbon 独立池**，精确展示每个池子真实的 `remainingFraction` 与 `resetTime` 倒计时，绝不跨池串用重置时间。
+- **零值省略与受限判定**：当模型额度用尽（`0%`）或权限受限（`disabled: true` / `Unavailable`）时，精准识别为 `0%` 或“暂不可用 · 需 Ultra”。
 
-### 2. 严格锁定反重力四大真实可用模型
-彻底剥离所有非反重力环境的虚构/失效模型，专注服务反重力四大核心生产力模型：
-- 🌟 **Gemini 4 Argon** (`gemini-4-argon` / `MODEL_PLACEHOLDER_M417~M419`)：反重力旗舰深度推理模型（周滚动配额）。
-- ⚡ **Gemini 3.8 Flash** (`gemini-3.8-flash` / `MODEL_PLACEHOLDER_M318~M320`)：极速高频主力模型（5h 滚动配额）。
-- 🧠 **Claude Opus 5.5** (`claude-opus-5-5` / `MODEL_PLACEHOLDER_M400~M402/M26`)：Anthropic 深度思考模型（5h 滚动配额）。
-- 💻 **Claude Sonnet 5.5** (`claude-sonnet-5-5` / `MODEL_PLACEHOLDER_M403~M405`)：Anthropic 编程高阶模型（5h 滚动配额）。
+### 2. 支持反重力全系 6 大核心模型与 4 大独立额度池
+专注服务反重力当前全部主力模型与额度池：
+- 🚀 **Gemini 4 Hydrogen** (`gemini-4-hydrogen` / `MODEL_PLACEHOLDER_M525~M528`)：高速主力新模型（与 `3.8 Flash` 共用 **Flash/H 共享池**）。
+- ⚡ **Gemini 3.8 Flash** (`gemini-3.8-flash` / `MODEL_PLACEHOLDER_M318~M320`)：极速高频主力模型（**Flash/H 共享池**）。
+- 🌟 **Gemini 4 Argon** (`gemini-4-argon` / `MODEL_PLACEHOLDER_M417~M419`)：反重力旗舰深度推理模型（**Argon 独立池**，多日周期限额）。
+- 🧠 **Claude Opus 5.5** (`claude-opus-5-5` / `MODEL_PLACEHOLDER_M400~M402/M26`)：Anthropic 超大思考模型（**Claude 独立池**）。
+- 💻 **Claude Sonnet 5.5** (`claude-sonnet-5-5` / `MODEL_PLACEHOLDER_M403~M405`)：Anthropic 编程高阶模型（**Claude 独立池**）。
+- 💎 **Gemini 4 Carbon** (`gemini-4-carbon` / `MODEL_PLACEHOLDER_M670`)：Ultra 专属高阶模型（**Carbon 独立池**，未解锁时清晰标注暂不可用，解锁后自动显示实时额度）。
 - **切模型 100% 防炸加固**：在客户端与 Sidecar 服务层均加入了完整的兜底字典，无论是手动切换还是 Antigravity 内部自动路由，永不触发 `KeyError`。
 
 ### 3. 硬件加速 60FPS Q 弹物理果冻回弹摸头动画

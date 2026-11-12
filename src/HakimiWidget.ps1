@@ -486,7 +486,7 @@ $DefaultConfig = @{
     click_through = $false
     follow_antigravity = $true
     hide_with_antigravity = $true
-    active_model = "gemini-3.8-flash"
+    active_model = "gemini-4-hydrogen"
     active_plan = "free"
     antigravity_brain_path = Join-Path $env:USERPROFILE ".gemini\antigravity\brain"
 }
@@ -501,9 +501,6 @@ if (Test-Path $ConfigPath) {
     } catch {}
 }
 
-if ($Config.active_model -notin @("gemini-4-argon", "gemini-3.8-flash", "claude-opus-5-5", "claude-sonnet-5-5")) {
-    $Config.active_model = "gemini-3.8-flash"
-}
 if ($null -eq $Config.anchor_corner) {
     $Config.anchor_corner = 0
     $Config.follow_antigravity = $true
@@ -550,6 +547,9 @@ $Monitor = [AntigravityMonitor]::new(
     [string]$Config.active_model,
     [string]$Config.active_plan
 )
+if ($Monitor.Pricing -and !$Monitor.Pricing.models.ContainsKey($Config.active_model)) {
+    $Config.active_model = $Monitor.ActiveModel
+}
 
 # Initialize Memory-Pinned Audio Player with DeepSeek Whale Default Pet Sounds (press.wav / D1.mp3 + release.wav / D2.mp3)
 $pressWavPath = Join-Path $AssetsDir "sounds\press.wav"
@@ -641,10 +641,12 @@ $TextFacingScale = $window.FindName("TextFacingScale")
 $QuotaViewGrid = $window.FindName("QuotaViewGrid")
 $HeaderTitle = $window.FindName("HeaderTitle")
 $ActiveModelBadge = $window.FindName("ActiveModelBadge")
+$FiveHourLabel = $window.FindName("FiveHourLabel")
 $FiveHourValue = $window.FindName("FiveHourValue")
 $FiveHourBarTrack = $window.FindName("FiveHourBarTrack")
 $FiveHourBarFill = $window.FindName("FiveHourBarFill")
 $FiveHourResetText = $window.FindName("FiveHourResetText")
+$WeeklyLabel = $window.FindName("WeeklyLabel")
 $WeeklyValue = $window.FindName("WeeklyValue")
 $WeeklyBarTrack = $window.FindName("WeeklyBarTrack")
 $WeeklyBarFill = $window.FindName("WeeklyBarFill")
@@ -1014,21 +1016,36 @@ function Toggle-DetailWindow {
 # Update UI from Monitor
 function Update-UI {
     $mInfo = $Monitor.Pricing.models[$Monitor.ActiveModel]
-    $shortName = if ($mInfo -and $mInfo.short_name) { $mInfo.short_name } else { "3.1 Pro" }
+    $shortName = if ($mInfo -and $mInfo.short_name) { $mInfo.short_name } else { "4 Hydrogen" }
     $vendorName = if ($mInfo -and $mInfo.vendor) { $mInfo.vendor } else { "Gemini" }
-    $HeaderTitle.Text = "$vendorName 剩余额度"
+    $HeaderTitle.Text = "$vendorName 额度池"
     $ActiveModelBadge.Text = $shortName
 
-    # 1. Update Beautified Base Bubble 5-Hour & Weekly Quotas
+    # 1. Update Base Bubble: Row 1 = Active Model Pool, Row 2 = Companion Independent Pool
+    $isActDis = [bool]$Monitor.FiveHour.Disabled
+    if ($null -ne $FiveHourLabel) {
+        $FiveHourLabel.Text = if ($Monitor.FiveHour.RowLabel) { [string]$Monitor.FiveHour.RowLabel } else { "5h 池" }
+    }
     $rem5h = [int]$Monitor.FiveHour.RemainingPct
-    $FiveHourValue.Text = "$rem5h%"
-    $FiveHourBarFill.Width = [Math]::Round(126.0 * ($rem5h / 100.0))
-    $FiveHourBarFill.Background = Get-QuotaColorBrush $rem5h $false
-    $FiveHourResetText.Text = "⏳ $($Monitor.FiveHour.ResetDisplay)"
+    if ($isActDis) {
+        $FiveHourValue.Text = "--"
+        $FiveHourValue.Foreground = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString("#94A3B8"))
+        $FiveHourBarFill.Width = 0
+        $FiveHourResetText.Text = "🔒 $($Monitor.FiveHour.ResetDisplay)"
+    } else {
+        $FiveHourValue.Text = "$rem5h%"
+        $FiveHourValue.Foreground = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString("#0F172A"))
+        $FiveHourBarFill.Width = [Math]::Round(118.0 * ($rem5h / 100.0))
+        $FiveHourBarFill.Background = Get-QuotaColorBrush $rem5h ([bool]$Monitor.FiveHour.IsWeekly)
+        $FiveHourResetText.Text = "⏳ $($Monitor.FiveHour.ResetDisplay)"
+    }
 
+    if ($null -ne $WeeklyLabel) {
+        $WeeklyLabel.Text = if ($Monitor.Weekly.ShortLabel) { [string]$Monitor.Weekly.ShortLabel } else { "Argon" }
+    }
     $rem7d = [int]$Monitor.Weekly.RemainingPct
     $WeeklyValue.Text = "$rem7d%"
-    $WeeklyBarFill.Width = [Math]::Round(126.0 * ($rem7d / 100.0))
+    $WeeklyBarFill.Width = [Math]::Round(118.0 * ($rem7d / 100.0))
     $WeeklyBarFill.Background = Get-QuotaColorBrush $rem7d $true
     $WeeklyResetText.Text = "📅 $($Monitor.Weekly.ResetDisplay)"
 
@@ -1038,7 +1055,7 @@ function Update-UI {
         $Monitor.Today.SavingsCNY
     )
 
-    # 2. Update Adaptive Detail Window (Gemini + Claude Per-Model Quotas)
+    # 2. Update Adaptive Detail Window (Independent Pool-Aware Per-Model Quotas)
     if ($null -ne $TogglePetSoundText) {
         $TogglePetSoundText.Text = if ($Config.sound_enabled) { "🔊 摸头音效: 开" } else { "🔇 摸头音效: 关" }
         $TogglePetSoundText.Foreground = if ($Config.sound_enabled) { [System.Windows.Media.BrushConverter]::new().ConvertFromString("#A5B4FC") } else { [System.Windows.Media.BrushConverter]::new().ConvertFromString("#64748B") }
@@ -1048,7 +1065,13 @@ function Update-UI {
         $ToggleCacheSoundText.Foreground = if ($Config.cache_sound_enabled) { [System.Windows.Media.BrushConverter]::new().ConvertFromString("#34D399") } else { [System.Windows.Media.BrushConverter]::new().ConvertFromString("#64748B") }
     }
 
-    $DetailPlanBadge.Text = if ($Monitor.ActivePlan -eq "tier1") { "Tier 1 付费层 (5x限额)" } else { "Free 免费层" }
+    $DetailPlanBadge.Text = if (![string]::IsNullOrEmpty($Monitor.LivePlanName)) {
+        "$($Monitor.LivePlanName) 实时池"
+    } elseif ($Monitor.ActivePlan -eq "tier1") {
+        "Tier 1 付费层 (5x限额)"
+    } else {
+        "Free 免费层"
+    }
     $DetailRpmText.Text = "$($Monitor.RateLimits.CurrentRPM) / $($Monitor.RateLimits.MaxRPM)"
     $DetailTpmText.Text = "$(Format-Tok $Monitor.RateLimits.CurrentTPM) / $(Format-Tok $Monitor.RateLimits.MaxTPM)"
     $DetailTpsText.Text = "$(Format-Tok $Monitor.RateLimits.CurrentTPS) / $(Format-Tok $Monitor.RateLimits.MaxTPS)"
@@ -1059,19 +1082,38 @@ function Update-UI {
     $DetailTodayText.Text = [string]::Format("今日累计 ({0} 轮): ¥{1:F2}", $Monitor.Today.Turns, $Monitor.Today.CostCNY)
     $DetailSaveText.Text = [string]::Format("⚡ 缓存已省 ¥{0:F2}", $Monitor.Today.SavingsCNY)
 
+    $poolBadgePalette = @{
+        "flash_hydrogen" = @{ Bg = "#2210B981"; Border = "#5510B981"; Text = "#34D399" }
+        "argon"          = @{ Bg = "#264F46E5"; Border = "#66818CF8"; Text = "#A5B4FC" }
+        "claude"         = @{ Bg = "#22F59E0B"; Border = "#55F59E0B"; Text = "#FCD34D" }
+        "carbon"         = @{ Bg = "#22A855F7"; Border = "#55C084FC"; Text = "#D8B4FE" }
+    }
+
     $ModelQuotaStack.Children.Clear()
     foreach ($mq in $Monitor.ModelQuotas) {
         $isAct = [bool]$mq.IsActive
+        $isDis = [bool]$mq.Disabled
         $isClaude = ([string]$mq.Vendor -eq "Claude")
+        $qPool = if ($mq.QuotaPool) { [string]$mq.QuotaPool } else { "argon" }
+        $pctVal = if ($null -ne $mq.RemainingPct) { [int]$mq.RemainingPct } else { [int]$mq.FiveHourRemainingPct }
+        $resText = if ($mq.ResetDisplay) { [string]$mq.ResetDisplay } else { [string]$mq.FiveHourReset }
+        $winText = if ($mq.WindowLabel) { [string]$mq.WindowLabel } else { "5h 周期池" }
+        $poolTxt = if ($isDis) { "暂不可用·Ultra" } elseif ($mq.PoolLabel) { [string]$mq.PoolLabel } else { "独立池" }
+
         $rowBorder = [System.Windows.Controls.Border]::new()
         $rowBorder.CornerRadius = [System.Windows.CornerRadius]::new(7)
-        $rowBorder.Padding = [System.Windows.Thickness]::new(7, 4, 7, 4)
+        $rowBorder.Padding = [System.Windows.Thickness]::new(7, 4.5, 7, 4.5)
         $rowBorder.Margin = [System.Windows.Thickness]::new(0, 0, 0, 3.5)
         $rowBorder.Cursor = [System.Windows.Input.Cursors]::Hand
         $rowBorder.Tag = [string]$mq.Key
+        $rowBorder.Opacity = if ($isDis -and !$isAct) { 0.72 } else { 1.0 }
         if ($isAct) {
             $rowBorder.Background = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString("#334F46E5"))
             $rowBorder.BorderBrush = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString("#818CF8"))
+            $rowBorder.BorderThickness = [System.Windows.Thickness]::new(1)
+        } elseif ($isDis) {
+            $rowBorder.Background = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString("#1264748B"))
+            $rowBorder.BorderBrush = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString("#2864748B"))
             $rowBorder.BorderThickness = [System.Windows.Thickness]::new(1)
         } else {
             $rowBorder.Background = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString($(if ($isClaude) { "#17F59E0B" } else { "#12FFFFFF" })))
@@ -1082,96 +1124,121 @@ function Update-UI {
         $sp = [System.Windows.Controls.StackPanel]::new()
 
         $topGrid = [System.Windows.Controls.Grid]::new()
+        $tc0 = [System.Windows.Controls.ColumnDefinition]::new()
+        $tc0.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+        $tc1 = [System.Windows.Controls.ColumnDefinition]::new()
+        $tc1.Width = [System.Windows.GridLength]::Auto
+        $topGrid.ColumnDefinitions.Add($tc0)
+        $topGrid.ColumnDefinitions.Add($tc1)
+
         $leftStack = [System.Windows.Controls.StackPanel]::new()
         $leftStack.Orientation = [System.Windows.Controls.Orientation]::Horizontal
+        $leftStack.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
 
         $nameTxt = [System.Windows.Controls.TextBlock]::new()
         $nameTxt.Text = $(if ($isAct) { "● $($mq.DisplayName)" } else { "  $($mq.DisplayName)" })
-        $nameColor = if ($isAct) { "#A5B4FC" } elseif ($isClaude) { "#FCD34D" } else { "#F1F5F9" }
+        $nameColor = if ($isAct) { "#A5B4FC" } elseif ($isDis) { "#94A3B8" } elseif ($isClaude) { "#FCD34D" } else { "#F1F5F9" }
         $nameTxt.Foreground = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString($nameColor))
-        $nameTxt.FontSize = 10.5
+        $nameTxt.FontSize = 10.2
         $nameTxt.FontWeight = [System.Windows.FontWeights]::Bold
+        $nameTxt.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
         $leftStack.Children.Add($nameTxt) | Out-Null
 
+        $pal = if ($isDis) {
+            @{ Bg = "#2264748B"; Border = "#4494A3B8"; Text = "#94A3B8" }
+        } elseif ($poolBadgePalette.ContainsKey($qPool)) {
+            $poolBadgePalette[$qPool]
+        } else {
+            $poolBadgePalette["argon"]
+        }
+        $pBadge = [System.Windows.Controls.Border]::new()
+        $pBadge.CornerRadius = [System.Windows.CornerRadius]::new(4)
+        $pBadge.Padding = [System.Windows.Thickness]::new(4, 0.5, 4, 0.5)
+        $pBadge.Margin = [System.Windows.Thickness]::new(5, 0, 0, 0)
+        $pBadge.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
+        $pBadge.Background = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString($pal.Bg))
+        $pBadge.BorderBrush = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString($pal.Border))
+        $pBadge.BorderThickness = [System.Windows.Thickness]::new(0.8)
+        $pBadgeTxt = [System.Windows.Controls.TextBlock]::new()
+        $pBadgeTxt.Text = $poolTxt
+        $pBadgeTxt.FontSize = 8.2
+        $pBadgeTxt.FontWeight = [System.Windows.FontWeights]::SemiBold
+        $pBadgeTxt.Foreground = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString($pal.Text))
+        $pBadge.Child = $pBadgeTxt
+        $leftStack.Children.Add($pBadge) | Out-Null
+
+        [System.Windows.Controls.Grid]::SetColumn($leftStack, 0)
+
         $rightTxt = [System.Windows.Controls.TextBlock]::new()
-        $rightTxt.Text = "5h $($mq.FiveHourReset) · 周 $($mq.WeeklyReset)"
-        $rightTxt.Foreground = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString("#94A3B8"))
-        $rightTxt.FontSize = 8.5
+        $rightTxt.Text = $resText
+        $rightTxt.Foreground = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString($(if ($isDis) { "#64748B" } else { "#94A3B8" })))
+        $rightTxt.FontSize = 8.4
         $rightTxt.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Right
         $rightTxt.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
+        [System.Windows.Controls.Grid]::SetColumn($rightTxt, 1)
 
         $topGrid.Children.Add($leftStack) | Out-Null
         $topGrid.Children.Add($rightTxt) | Out-Null
         $sp.Children.Add($topGrid) | Out-Null
 
-        $barsGrid = [System.Windows.Controls.Grid]::new()
-        $barsGrid.Margin = [System.Windows.Thickness]::new(0, 2.5, 0, 0)
-        $c1 = [System.Windows.Controls.ColumnDefinition]::new()
-        $c1.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
-        $c2 = [System.Windows.Controls.ColumnDefinition]::new()
-        $c2.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
-        $barsGrid.ColumnDefinitions.Add($c1)
-        $barsGrid.ColumnDefinitions.Add($c2)
+        # Single Honest Pool Progress Bar Row
+        $barRow = [System.Windows.Controls.Grid]::new()
+        $barRow.Margin = [System.Windows.Thickness]::new(0, 3, 0, 0)
+        $bc0 = [System.Windows.Controls.ColumnDefinition]::new()
+        $bc0.Width = [System.Windows.GridLength]::new(64)
+        $bc1 = [System.Windows.Controls.ColumnDefinition]::new()
+        $bc1.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+        $bc2 = [System.Windows.Controls.ColumnDefinition]::new()
+        $bc2.Width = [System.Windows.GridLength]::new(42)
+        $barRow.ColumnDefinitions.Add($bc0)
+        $barRow.ColumnDefinitions.Add($bc1)
+        $barRow.ColumnDefinitions.Add($bc2)
 
-        # 5h Column
-        $s5 = [System.Windows.Controls.StackPanel]::new()
-        $s5.Orientation = [System.Windows.Controls.Orientation]::Horizontal
-        $s5.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
-        $t5 = [System.Windows.Controls.TextBlock]::new()
-        $t5.Text = "5h $($mq.FiveHourRemainingPct)%"
-        $t5.Width = 46
-        $t5.FontSize = 9.5
-        $t5.FontWeight = [System.Windows.FontWeights]::SemiBold
-        $t5.Foreground = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString("#E2E8F0"))
-        $trk5 = [System.Windows.Controls.Border]::new()
-        $trk5.Width = 60; $trk5.Height = 5.5
-        $trk5.CornerRadius = [System.Windows.CornerRadius]::new(3)
-        $trk5.Background = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString("#334155"))
-        $trk5.Margin = [System.Windows.Thickness]::new(3, 0, 4, 0)
-        $fil5 = [System.Windows.Controls.Border]::new()
-        $fil5.Width = [Math]::Round(60.0 * ($mq.FiveHourRemainingPct / 100.0))
-        $fil5.Height = 5.5
-        $fil5.CornerRadius = [System.Windows.CornerRadius]::new(3)
-        $fil5.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Left
-        $fil5.Background = Get-QuotaColorBrush ([int]$mq.FiveHourRemainingPct) $false
-        $trk5.Child = $fil5
-        $trk5.Width = 82
-        $fil5.Width = [Math]::Round(82.0 * ($mq.FiveHourRemainingPct / 100.0))
-        $s5.Children.Add($t5) | Out-Null
-        $s5.Children.Add($trk5) | Out-Null
-        [System.Windows.Controls.Grid]::SetColumn($s5, 0)
-        $barsGrid.Children.Add($s5) | Out-Null
+        $lblWin = [System.Windows.Controls.TextBlock]::new()
+        $lblWin.Text = $winText
+        $lblWin.FontSize = 8.8
+        $lblWin.Foreground = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString("#94A3B8"))
+        $lblWin.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
+        [System.Windows.Controls.Grid]::SetColumn($lblWin, 0)
 
-        # Weekly Column
-        $s7 = [System.Windows.Controls.StackPanel]::new()
-        $s7.Orientation = [System.Windows.Controls.Orientation]::Horizontal
-        $s7.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
-        $t7 = [System.Windows.Controls.TextBlock]::new()
-        $t7.Text = "周 $($mq.WeeklyRemainingPct)%"
-        $t7.Width = 42
-        $t7.FontSize = 9.5
-        $t7.FontWeight = [System.Windows.FontWeights]::SemiBold
-        $t7.Foreground = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString("#E2E8F0"))
-        $trk7 = [System.Windows.Controls.Border]::new()
-        $trk7.Width = 60; $trk7.Height = 5.5
-        $trk7.CornerRadius = [System.Windows.CornerRadius]::new(3)
-        $trk7.Background = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString("#334155"))
-        $trk7.Margin = [System.Windows.Thickness]::new(3, 0, 4, 0)
-        $fil7 = [System.Windows.Controls.Border]::new()
-        $fil7.Width = [Math]::Round(60.0 * ($mq.WeeklyRemainingPct / 100.0))
-        $fil7.Height = 5.5
-        $fil7.CornerRadius = [System.Windows.CornerRadius]::new(3)
-        $fil7.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Left
-        $fil7.Background = Get-QuotaColorBrush ([int]$mq.WeeklyRemainingPct) $true
-        $trk7.Child = $fil7
-        $trk7.Width = 82
-        $fil7.Width = [Math]::Round(82.0 * ($mq.WeeklyRemainingPct / 100.0))
-        $s7.Children.Add($t7) | Out-Null
-        $s7.Children.Add($trk7) | Out-Null
-        [System.Windows.Controls.Grid]::SetColumn($s7, 1)
-        $barsGrid.Children.Add($s7) | Out-Null
+        $trk = [System.Windows.Controls.Border]::new()
+        $trk.Width = 172; $trk.Height = 5.5
+        $trk.CornerRadius = [System.Windows.CornerRadius]::new(3)
+        $trk.Background = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString("#334155"))
+        $trk.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Left
+        $trk.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
+        $fil = [System.Windows.Controls.Border]::new()
+        $fil.Height = 5.5
+        $fil.CornerRadius = [System.Windows.CornerRadius]::new(3)
+        $fil.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Left
+        if ($isDis) {
+            $fil.Width = 0
+            $fil.Background = [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString("#475569"))
+        } else {
+            $fil.Width = [Math]::Round(172.0 * ($pctVal / 100.0))
+            $fil.Background = Get-QuotaColorBrush $pctVal ([bool]$mq.IsWeekly)
+        }
+        $trk.Child = $fil
+        [System.Windows.Controls.Grid]::SetColumn($trk, 1)
 
-        $sp.Children.Add($barsGrid) | Out-Null
+        $valTxt = [System.Windows.Controls.TextBlock]::new()
+        $valTxt.Text = if ($isDis) { "未解锁" } else { "$pctVal%" }
+        $valTxt.FontSize = 9.5
+        $valTxt.FontWeight = [System.Windows.FontWeights]::Bold
+        $valTxt.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Right
+        $valTxt.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
+        $valTxt.Foreground = if ($isDis) {
+            [System.Windows.Media.SolidColorBrush]([System.Windows.Media.ColorConverter]::ConvertFromString("#94A3B8"))
+        } else {
+            Get-QuotaColorBrush $pctVal ([bool]$mq.IsWeekly)
+        }
+        [System.Windows.Controls.Grid]::SetColumn($valTxt, 2)
+
+        $barRow.Children.Add($lblWin) | Out-Null
+        $barRow.Children.Add($trk) | Out-Null
+        $barRow.Children.Add($valTxt) | Out-Null
+        $sp.Children.Add($barRow) | Out-Null
+
         $rowBorder.Child = $sp
 
         $rowBorder.Add_MouseLeftButtonUp({
@@ -1181,6 +1248,7 @@ function Update-UI {
                 $Config.active_model = $mk
                 Save-Config
                 $Monitor.SetModel($mk, $Config.active_plan)
+                if (!$Monitor.SyncFromSidecar()) { $Monitor.ScanAllWindows() }
                 Play-HakimiSound "press"
                 Update-UI
             }
@@ -1678,6 +1746,7 @@ function Rebuild-ContextMenu {
             $Config.active_model = $selectedModel
             Save-Config
             $Monitor.SetModel($selectedModel, $Config.active_plan)
+            if (!$Monitor.SyncFromSidecar()) { $Monitor.ScanAllWindows() }
             Update-UI
         })
         $miModels.Items.Add($mSub) | Out-Null

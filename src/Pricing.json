@@ -1,34 +1,17 @@
 {
-  "_source": "Official Google Antigravity & Claude 4 Models Pricing & Quotas",
+  "_source": "Official Google Antigravity & Claude Models Pricing & Quotas",
   "usd_to_cny": 7.25,
-  "default_model": "gemini-3.8-flash",
+  "default_model": "gemini-4-hydrogen",
   "context_window": 1048576,
   "models": {
-    "gemini-4-argon": {
-      "display_name": "Gemini 4 Argon",
-      "short_name": "4 Argon",
+    "gemini-4-hydrogen": {
+      "display_name": "Gemini 4 Hydrogen",
+      "short_name": "4 Hydrogen",
       "vendor": "Gemini",
-      "badge": "FLAGSHIP",
-      "note": "反重力旗舰深度推理模型 ($2/$10, 缓存命中 $0.10)",
-      "context_window": 1048576,
-      "quota_5h_turns": 600,
-      "quota_5h_tokens": 25000000,
-      "quota_weekly_turns": 3500,
-      "quota_weekly_tokens": 150000000,
-      "tiers": [
-        {
-          "hit": 0.1,
-          "miss": 2.0,
-          "out": 10.0
-        }
-      ]
-    },
-    "gemini-3.8-flash": {
-      "display_name": "Gemini 3.8 Flash",
-      "short_name": "3.8 Flash",
-      "vendor": "Gemini",
-      "badge": "FLASH",
-      "note": "反重力极速高频主力模型 ($0.75/$3.75, 缓存命中 $0.075)",
+      "badge": "NEW",
+      "quota_pool": "flash_hydrogen",
+      "pool_label": "Flash/H 共享池",
+      "note": "反重力新秀高速主力 · 与 3.8 Flash 共享额度池 ($0.75/$3.75, 缓存命中 $0.075)",
       "context_window": 1048576,
       "quota_5h_turns": 2500,
       "quota_5h_tokens": 80000000,
@@ -42,12 +25,56 @@
         }
       ]
     },
+    "gemini-3.8-flash": {
+      "display_name": "Gemini 3.8 Flash",
+      "short_name": "3.8 Flash",
+      "vendor": "Gemini",
+      "badge": "FLASH",
+      "quota_pool": "flash_hydrogen",
+      "pool_label": "Flash/H 共享池",
+      "note": "反重力极速高频主力模型 · 与 4 Hydrogen 共享额度池 ($0.75/$3.75, 缓存命中 $0.075)",
+      "context_window": 1048576,
+      "quota_5h_turns": 2500,
+      "quota_5h_tokens": 80000000,
+      "quota_weekly_turns": 15000,
+      "quota_weekly_tokens": 500000000,
+      "tiers": [
+        {
+          "hit": 0.075,
+          "miss": 0.75,
+          "out": 3.75
+        }
+      ]
+    },
+    "gemini-4-argon": {
+      "display_name": "Gemini 4 Argon",
+      "short_name": "4 Argon",
+      "vendor": "Gemini",
+      "badge": "FLAGSHIP",
+      "quota_pool": "argon",
+      "pool_label": "Argon 独立池",
+      "note": "反重力旗舰深度推理模型 · 独立配额池 ($2/$10, 缓存命中 $0.10)",
+      "context_window": 1048576,
+      "quota_5h_turns": 600,
+      "quota_5h_tokens": 25000000,
+      "quota_weekly_turns": 3500,
+      "quota_weekly_tokens": 150000000,
+      "tiers": [
+        {
+          "hit": 0.1,
+          "miss": 2.0,
+          "out": 10.0
+        }
+      ]
+    },
     "claude-opus-5-5": {
       "display_name": "Claude Opus 5.5",
       "short_name": "Opus 5.5",
       "vendor": "Claude",
       "badge": "CLAUDE",
-      "note": "Anthropic 超大思考模型 ($4/$20, 缓存命中 $0.20)",
+      "quota_pool": "claude",
+      "pool_label": "Claude 独立池",
+      "note": "Anthropic 超大思考模型 · Claude 独立配额池 ($4/$20, 缓存命中 $0.20)",
       "context_window": 200000,
       "quota_5h_turns": 400,
       "quota_5h_tokens": 15000000,
@@ -66,7 +93,9 @@
       "short_name": "Sonnet 5.5",
       "vendor": "Claude",
       "badge": "CLAUDE",
-      "note": "Anthropic 编程深度模型 ($2/$10, 缓存命中 $0.10)",
+      "quota_pool": "claude",
+      "pool_label": "Claude 独立池",
+      "note": "Anthropic 编程深度模型 · Claude 独立配额池 ($2/$10, 缓存命中 $0.10)",
       "context_window": 200000,
       "quota_5h_turns": 800,
       "quota_5h_tokens": 30000000,
@@ -77,6 +106,27 @@
           "hit": 0.1,
           "miss": 2.0,
           "out": 10.0
+        }
+      ]
+    },
+    "gemini-4-carbon": {
+      "display_name": "Gemini 4 Carbon",
+      "short_name": "4 Carbon",
+      "vendor": "Gemini",
+      "badge": "ULTRA",
+      "quota_pool": "carbon",
+      "pool_label": "Carbon 独立池",
+      "note": "Ultra 订阅专属模型 · 当前账号暂不可用 ($3/$15, 缓存命中 $0.15)",
+      "context_window": 1048576,
+      "quota_5h_turns": 400,
+      "quota_5h_tokens": 15000000,
+      "quota_weekly_turns": 2200,
+      "quota_weekly_tokens": 90000000,
+      "tiers": [
+        {
+          "hit": 0.15,
+          "miss": 3.0,
+          "out": 15.0
         }
       ]
     }

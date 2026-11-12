@@ -531,11 +531,11 @@
     </div>
   </div>
 
-  <!-- 0.5 GPT-Niang Style 5-Hour & Weekly Quota + Per-Model Matrix -->
+  <!-- 0.5 Independent Pool Quotas + Per-Model Matrix -->
   <div class="card">
     <div class="section-title">
-      <span>🐉 各模型 5 小时 & 每周剩余限额 (点击切换)</span>
-      <span id="txtActiveQuotaReset" style="font-size:10.5px;color:var(--blue)">5h / 每周实时追踪</span>
+      <span>🐉 各模型额度池与独立重置时间 (点击切换)</span>
+      <span id="txtActiveQuotaReset" style="font-size:10.5px;color:var(--blue)">实时池状态同步中</span>
     </div>
     <div id="modelQuotaList" style="display:flex;flex-direction:column;gap:6px;"></div>
   </div>
@@ -875,39 +875,52 @@
       const s = data.session || {};
       document.getElementById('sessionTitle').innerText = s.title ? `会话: ${s.title.slice(0, 14)}` : '实时监听中';
 
-      // GPT-Niang 5h & Weekly Per-Model Quotas
+      // Independent Pool-Aware Per-Model Quotas
       const mqList = document.getElementById('modelQuotaList');
       if (mqList && Array.isArray(data.model_quotas)) {
-        if (data.five_hour && data.weekly) {
-          document.getElementById('txtActiveQuotaReset').innerText = `5h ${data.five_hour.reset_display} · 周 ${data.weekly.reset_display}`;
+        const activeMq = data.model_quotas.find(x => x.is_active) || data.model_quotas[0];
+        if (activeMq) {
+          document.getElementById('txtActiveQuotaReset').innerText = `${activeMq.pool_label} · ${activeMq.reset_display}`;
         }
+        const poolStyleMap = {
+          flash_hydrogen: { bg: 'rgba(16,185,129,0.14)', border: 'rgba(16,185,129,0.35)', text: '#34d399' },
+          argon:          { bg: 'rgba(99,102,241,0.16)', border: 'rgba(129,140,248,0.38)', text: '#a5b4fc' },
+          claude:         { bg: 'rgba(245,158,11,0.14)', border: 'rgba(245,158,11,0.35)', text: '#fbbf24' },
+          carbon:         { bg: 'rgba(168,85,247,0.14)', border: 'rgba(192,132,252,0.35)', text: '#d8b4fe' }
+        };
         mqList.innerHTML = data.model_quotas.map(m => {
-          const c5 = m.five_hour_remaining_pct <= 20 ? 'var(--rose)' : (m.five_hour_remaining_pct <= 40 ? 'var(--amber)' : 'var(--emerald)');
-          const c7 = m.weekly_remaining_pct <= 20 ? 'var(--rose)' : (m.weekly_remaining_pct <= 40 ? 'var(--amber)' : 'var(--blue)');
-          const activeBorder = m.is_active ? 'border:1px solid var(--blue);background:rgba(56,189,248,0.10);' : 'border:1px solid var(--card-border);background:var(--card-inner);';
+          const isDis = !!m.disabled;
+          const pct = Number(m.remaining_pct !== undefined ? m.remaining_pct : m.five_hour_remaining_pct || 0);
+          const barColor = isDis
+            ? 'rgba(148,163,184,0.35)'
+            : (pct <= 20 ? 'var(--rose)' : (pct <= 40 ? 'var(--amber)' : (m.is_weekly ? 'var(--blue)' : 'var(--emerald)')));
+          const pStyle = isDis
+            ? { bg: 'rgba(148,163,184,0.14)', border: 'rgba(148,163,184,0.30)', text: '#94a3b8' }
+            : (poolStyleMap[m.quota_pool] || poolStyleMap.argon);
+          const activeBorder = m.is_active
+            ? 'border:1px solid var(--blue);background:rgba(56,189,248,0.10);'
+            : (isDis ? 'border:1px dashed var(--card-border);background:rgba(15,23,42,0.35);opacity:0.72;' : 'border:1px solid var(--card-border);background:var(--card-inner);');
+          const badgeTxt = isDis ? '暂不可用 · Ultra' : (m.pool_label || '独立池');
+          const statusRight = m.reset_display || m.five_hour_reset || '';
+          const valText = isDis ? '未解锁' : `${pct}%`;
+          const barW = isDis ? 0 : pct;
           return `
             <div onclick="updateConfig({active_model:'${m.id}'})" style="cursor:pointer;border-radius:9px;padding:7px 9px;${activeBorder}">
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
-                <span style="font-weight:700;font-size:11.5px;color:${m.is_active ? 'var(--blue)' : 'var(--text)'}">
-                  ${m.is_active ? '● ' : ''}${m.name}
-                </span>
-                <span style="font-size:10px;color:var(--text-sub)">5h ${m.five_hour_reset} · 周 ${m.weekly_reset}</span>
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:5px;">
+                <div style="display:flex;align-items:center;gap:5px;min-width:0;">
+                  <span style="font-weight:700;font-size:11.5px;color:${m.is_active ? 'var(--blue)' : (isDis ? 'var(--text-sub)' : 'var(--text)')};white-space:nowrap;">
+                    ${m.is_active ? '● ' : ''}${m.name}
+                  </span>
+                  <span style="font-size:9.5px;font-weight:600;padding:1px 5px;border-radius:5px;background:${pStyle.bg};border:1px solid ${pStyle.border};color:${pStyle.text};white-space:nowrap;">
+                    ${badgeTxt}
+                  </span>
+                </div>
+                <span style="font-size:10px;color:${isDis ? '#94a3b8' : 'var(--text-sub)'};white-space:nowrap;">${statusRight}</span>
               </div>
-              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:center;">
-                <div>
-                  <div style="display:flex;justify-content:space-between;font-size:10.5px;margin-bottom:2px;">
-                    <span style="color:var(--text-sub)">5 小时剩余</span>
-                    <strong style="color:${c5}">${m.five_hour_remaining_pct}%</strong>
-                  </div>
-                  <div class="progress-track"><div class="progress-fill" style="width:${m.five_hour_remaining_pct}%;background:${c5};"></div></div>
-                </div>
-                <div>
-                  <div style="display:flex;justify-content:space-between;font-size:10.5px;margin-bottom:2px;">
-                    <span style="color:var(--text-sub)">每周剩余</span>
-                    <strong style="color:${c7}">${m.weekly_remaining_pct}%</strong>
-                  </div>
-                  <div class="progress-track"><div class="progress-fill" style="width:${m.weekly_remaining_pct}%;background:${c7};"></div></div>
-                </div>
+              <div style="display:flex;align-items:center;gap:8px;">
+                <span style="font-size:10px;color:var(--text-sub);min-width:64px;white-space:nowrap;">${m.window_label || (m.is_weekly ? '多日周期池' : '5h 周期池')}</span>
+                <div class="progress-track" style="flex:1;"><div class="progress-fill" style="width:${barW}%;background:${barColor};"></div></div>
+                <strong style="font-size:11px;min-width:36px;text-align:right;color:${isDis ? '#94a3b8' : barColor}">${valText}</strong>
               </div>
             </div>
           `;
