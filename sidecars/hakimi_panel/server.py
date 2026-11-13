@@ -95,20 +95,29 @@ def get_config():
 
 CONV_MODEL_CACHE = {}
 _LAST_PBTXT_MODEL = None
+_LAST_STEP_MODEL_SIG = None
 
 _MODEL_MATCH_RULES = (
-    ("gemini-4-hydrogen", ("MODEL_PLACEHOLDER_M525", "MODEL_PLACEHOLDER_M526", "MODEL_PLACEHOLDER_M527", "MODEL_PLACEHOLDER_M528", "gemini-4-hydrogen", "hydrogen")),
+    ("gemini-4-hydrogen", ("MODEL_PLACEHOLDER_M525", "MODEL_PLACEHOLDER_M526", "MODEL_PLACEHOLDER_M527", "MODEL_PLACEHOLDER_M528", "MODEL_PLACEHOLDER_M669", "gemini-flash-worker-agy", "gemini-flash-worker", "flash-worker", "gemini-4-hydrogen", "hydrogen")),
     ("gemini-4-carbon", ("MODEL_PLACEHOLDER_M670", "gemini-4-carbon", "carbon")),
-    ("gemini-4-argon", ("MODEL_PLACEHOLDER_M417", "MODEL_PLACEHOLDER_M418", "MODEL_PLACEHOLDER_M419", "gemini-4-argon", "argon")),
+    ("gemini-4-argon", ("MODEL_PLACEHOLDER_M417", "MODEL_PLACEHOLDER_M418", "MODEL_PLACEHOLDER_M419", "MODEL_PLACEHOLDER_M668", "gemini-pro-orchestrator-g1-pro", "gemini-pro-orchestrator", "orchestrator", "gemini-4-argon", "argon")),
     ("claude-opus-5-5", ("MODEL_PLACEHOLDER_M400", "MODEL_PLACEHOLDER_M401", "MODEL_PLACEHOLDER_M402", "MODEL_PLACEHOLDER_M26", "claude-opus", "opus")),
     ("claude-sonnet-5-5", ("MODEL_PLACEHOLDER_M403", "MODEL_PLACEHOLDER_M404", "MODEL_PLACEHOLDER_M405", "claude-sonnet", "sonnet")),
-    ("gemini-3.8-flash", ("MODEL_PLACEHOLDER_M318", "MODEL_PLACEHOLDER_M319", "MODEL_PLACEHOLDER_M320", "gemini-3.8-flash", "flash")),
+    ("gemini-3.8-flash", ("MODEL_PLACEHOLDER_M318", "MODEL_PLACEHOLDER_M319", "MODEL_PLACEHOLDER_M320", "MODEL_PLACEHOLDER_M322", "gemini-3.8-flash-tiered", "gemini-3.8-flash-n", "gemini-3.8-flash", "flash")),
+)
+
+_INVOKED_MODEL_ID_RE = re.compile(r"((?:gemini|claude|gpt)-[a-z0-9.\-]+)", re.I)
+_MODEL_ENUM_RE = re.compile(r"model_enum[^\w]*(MODEL_[A-Z0-9_]+)")
+_LAST_STEP_IDX_RE = re.compile(r"last_step_index[^\d]*(\d+)")
+_RAW_PAIR_RE = re.compile(
+    r"((?:gemini|claude|gpt)-[a-z0-9.\-]+)[\s\S]{1,260}?model_enum[^\w]*(MODEL_[A-Z0-9_]+)|model_enum[^\w]*(MODEL_[A-Z0-9_]+)",
+    re.I,
 )
 
 
 def map_raw_model_key(raw_text, placeholder=""):
     """Map placeholder tokens, model IDs, or labels to canonical pricing model keys."""
-    combined = f"{placeholder} {raw_text}".lower()
+    combined = f"{raw_text} {placeholder}".lower()
     for mkey, tokens in _MODEL_MATCH_RULES:
         for tok in tokens:
             if tok.lower() in combined:
@@ -116,31 +125,173 @@ def map_raw_model_key(raw_text, placeholder=""):
     return None
 
 
+def _decode_packed_step_indices(blob):
+    """Decode protobuf field 2 (wire type 2) packed varint step indices from gen_metadata.data."""
+    if not blob or blob[0] != 0x12:
+        return []
+    pos = 1
+    length = 0
+    shift = 0
+    while pos < len(blob):
+        b = blob[pos]
+        pos += 1
+        length |= (b & 0x7F) << shift
+        if not (b & 0x80):
+            break
+        shift += 7
+    end = min(len(blob), pos + length)
+    indices = []
+    while pos < end:
+        val = 0
+        shift = 0
+        while pos < end:
+            b = blob[pos]
+            pos += 1
+            val |= (b & 0x7F) << shift
+            if not (b & 0x80):
+                break
+            shift += 7
+        indices.append(val)
+    return indices
+
+
+def _fallback_read_tail_model(db_path):
+    """Read raw tail bytes of conversation DB when sqlite3 read-only query fails."""
+    try:
+        st_size = os.path.getsize(db_path)
+        with open(db_path, "rb") as f:
+            f.seek(max(0, st_size - 262144))
+            tail = f.read().decode("latin-1", errors="ignore")
+        matches = list(_RAW_PAIR_RE.finditer(tail))
+        for m in reversed(matches):
+            raw_id = (m.group(1) or "").lower()
+            enum_str = m.group(2) or m.group(3) or ""
+            mkey = map_raw_model_key(raw_id, enum_str)
+            if mkey:
+                return mkey, (raw_id or enum_str or mkey), enum_str
+    except Exception:
+        pass
+    return None, "", ""
+
+
+def get_conv_step_models(conv_id, fallback_model=None):
+    """Extract per-step actual invoked model IDs from conversations/<conv_id>.db with incremental caching."""
+    if fallback_model is None:
+        fallback_model = detect_antigravity_active_model()
+    empty_res = {
+        "mtime": 0.0,
+        "size": 0,
+        "last_idx": -1,
+        "step_map": {},
+        "latest_model": fallback_model,
+        "latest_invoked_id": fallback_model,
+        "latest_enum": "",
+    }
+    if not conv_id:
+        return empty_res
+
+    db_path = os.path.join(AGY_DIR, "conversations", f"{conv_id}.db")
+    if not os.path.exists(db_path):
+        return empty_res
+
+    try:
+        st = os.stat(db_path)
+    except OSError:
+        return empty_res
+
+    cached = CONV_MODEL_CACHE.get(conv_id)
+    if cached and cached.get("mtime") == st.st_mtime and cached.get("size") == st.st_size:
+        return cached
+
+    if cached:
+        step_map = dict(cached.get("step_map", {}))
+        last_idx = int(cached.get("last_idx", -1))
+        latest_model = cached.get("latest_model") or fallback_model
+        latest_invoked_id = cached.get("latest_invoked_id") or latest_model
+        latest_enum = cached.get("latest_enum") or ""
+    else:
+        step_map = {}
+        last_idx = -1
+        latest_model = fallback_model
+        latest_invoked_id = fallback_model
+        latest_enum = ""
+
+    sqlite_ok = False
+    try:
+        uri_path = urllib.request.pathname2url(os.path.abspath(db_path))
+        conn = sqlite3.connect(f"file:{uri_path}?mode=ro", uri=True, timeout=1.0)
+        cur = conn.cursor()
+        rows = cur.execute(
+            "SELECT idx, substr(data, 1, 64), substr(data, -700) FROM gen_metadata WHERE idx > ? ORDER BY idx ASC",
+            (last_idx,),
+        ).fetchall()
+        conn.close()
+        sqlite_ok = True
+
+        for row_idx, head_bytes, tail_bytes in rows:
+            if row_idx > last_idx:
+                last_idx = int(row_idx)
+            tail = (tail_bytes or b"").decode("latin-1", errors="ignore")
+            m_ids = _INVOKED_MODEL_ID_RE.findall(tail)
+            raw_id = m_ids[-1].lower() if m_ids else ""
+            m_enum = _MODEL_ENUM_RE.search(tail)
+            enum_str = m_enum.group(1) if m_enum else ""
+            mkey = map_raw_model_key(raw_id, enum_str)
+            if not mkey:
+                continue
+            invoked_id = raw_id or enum_str or mkey
+            steps = _decode_packed_step_indices(head_bytes or b"")
+            m_ls = _LAST_STEP_IDX_RE.search(tail)
+            if steps:
+                if m_ls:
+                    ls_idx = int(m_ls.group(1))
+                    max_s = max(steps)
+                    if max_s > ls_idx and (max_s - ls_idx) <= 64:
+                        cover_range = range(ls_idx + 1, max_s + 1)
+                    else:
+                        cover_range = steps
+                else:
+                    cover_range = steps
+            elif m_ls:
+                ls_idx = int(m_ls.group(1))
+                cover_range = (ls_idx + 1, ls_idx + 2)
+            else:
+                cover_range = ()
+
+            info_tuple = (mkey, invoked_id, enum_str)
+            for s_idx in cover_range:
+                step_map[int(s_idx)] = info_tuple
+            latest_model = mkey
+            latest_invoked_id = invoked_id
+            latest_enum = enum_str
+    except Exception:
+        sqlite_ok = False
+
+    if not sqlite_ok:
+        fb_key, fb_invoked, fb_enum = _fallback_read_tail_model(db_path)
+        if fb_key:
+            latest_model = fb_key
+            latest_invoked_id = fb_invoked
+            latest_enum = fb_enum
+
+    res = {
+        "mtime": st.st_mtime,
+        "size": st.st_size,
+        "last_idx": last_idx,
+        "step_map": step_map,
+        "latest_model": latest_model,
+        "latest_invoked_id": latest_invoked_id,
+        "latest_enum": latest_enum,
+    }
+    CONV_MODEL_CACHE[conv_id] = res
+    return res
+
+
 def get_conv_model(conv_id):
     if not conv_id:
-        return None
-    db_path = os.path.join(AGY_DIR, "conversations", f"{conv_id}.db")
-    cached = CONV_MODEL_CACHE.get(conv_id)
-    if isinstance(cached, str) and cached:
-        return cached
-    if os.path.exists(db_path):
-        try:
-            st_size = os.path.getsize(db_path)
-            if isinstance(cached, tuple) and cached[0] == st_size:
-                return cached[1] or detect_antigravity_active_model()
-            with open(db_path, "rb") as f:
-                f.seek(max(0, st_size - 120000))
-                raw = f.read().decode("latin-1", errors="ignore")
-            mkey = map_raw_model_key(raw)
-            if mkey:
-                CONV_MODEL_CACHE[conv_id] = mkey
-                return mkey
-            CONV_MODEL_CACHE[conv_id] = (st_size, None)
-        except Exception:
-            pass
-    else:
-        CONV_MODEL_CACHE[conv_id] = (0, None)
-    return detect_antigravity_active_model()
+        return detect_antigravity_active_model()
+    cm = get_conv_step_models(conv_id)
+    return cm.get("latest_model") or detect_antigravity_active_model()
 
 
 def detect_antigravity_active_model():
@@ -264,7 +415,9 @@ def calculate_cost(inp, cache, out, model_key, pricing):
         "cost_usd": round(cost_usd, 5),
         "cost_cny": round(cost_usd * rate, 4),
         "savings_usd": round(savings_usd, 5),
-        "savings_cny": round(savings_usd * rate, 4)
+        "savings_cny": round(savings_usd * rate, 4),
+        "raw_cost_usd": cost_usd,
+        "raw_savings_usd": savings_usd,
     }
 
 
@@ -815,19 +968,27 @@ def stop_desktop_pet():
     return False
 
 
-def _resolve_active_model(cfg, models_dict):
-    global _LAST_PBTXT_MODEL
+def _resolve_active_model(cfg, models_dict, latest_conv_model=None, latest_step_sig=None):
+    global _LAST_PBTXT_MODEL, _LAST_STEP_MODEL_SIG
     detected_model = detect_antigravity_active_model()
     active_model = cfg.get("active_model")
-    if detected_model and detected_model in models_dict and detected_model != _LAST_PBTXT_MODEL:
-        _LAST_PBTXT_MODEL = detected_model
-        if active_model != detected_model:
-            active_model = detected_model
+    target_detected = latest_conv_model if (latest_conv_model and latest_conv_model in models_dict) else detected_model
+
+    step_changed = bool(latest_step_sig and latest_step_sig != _LAST_STEP_MODEL_SIG)
+    pbtxt_changed = bool(detected_model and detected_model in models_dict and detected_model != _LAST_PBTXT_MODEL)
+
+    if step_changed or pbtxt_changed:
+        if latest_step_sig:
+            _LAST_STEP_MODEL_SIG = latest_step_sig
+        if detected_model and detected_model in models_dict:
+            _LAST_PBTXT_MODEL = detected_model
+        if target_detected and target_detected in models_dict and active_model != target_detected:
+            active_model = target_detected
             cfg["active_model"] = active_model
             save_json(CONFIG_PATH, cfg)
     if not active_model or active_model not in models_dict:
-        active_model = detected_model if detected_model in models_dict else "gemini-4-hydrogen"
-    return active_model, detected_model
+        active_model = target_detected if target_detected in models_dict else "gemini-4-hydrogen"
+    return active_model, (target_detected if target_detected in models_dict else detected_model)
 
 
 _STATS_LOCK = threading.Lock()
@@ -849,12 +1010,8 @@ def _collect_stats_uncached(requested_conv_id=None):
     cfg = get_config()
     pricing = get_pricing()
     models_dict = pricing.get("models", {})
-    active_model, detected_model = _resolve_active_model(cfg, models_dict)
-    active_plan = cfg.get("active_plan", "free")
-    fallback_info = {"display_name": active_model, "context_window": 1048576, "tiers": [{"hit": 0.075, "miss": 0.75, "out": 3.75}]}
-    model_info = models_dict.get(active_model, fallback_info)
-    ctx_window = int(model_info.get("context_window") or pricing.get("context_window") or 1048576)
-    limits_cfg = pricing.get("limits", {}).get(active_plan, {"rpm": 15, "tpm": 1000000, "rpd": 1500})
+    rate = float(pricing.get("usd_to_cny", 7.25))
+    pbtxt_detected = detect_antigravity_active_model()
 
     pattern = os.path.join(BRAIN_DIR, "*", ".system_generated", "logs", "transcript.jsonl")
     files = glob.glob(pattern)
@@ -874,10 +1031,36 @@ def _collect_stats_uncached(requested_conv_id=None):
     if active_entry is None and files:
         active_entry = parse_transcript_file(files[0])
 
+    s_conv_id = active_entry["conv_id"] if active_entry else ""
+    s_steps = active_entry["steps"] if active_entry else []
+    active_cm = get_conv_step_models(s_conv_id, pbtxt_detected) if s_conv_id else {
+        "step_map": {}, "latest_model": pbtxt_detected, "latest_invoked_id": pbtxt_detected, "latest_enum": ""
+    }
+
+    last_step_idx = s_steps[-1]["step_index"] if s_steps else 0
+    last_step_info = active_cm["step_map"].get(last_step_idx) if s_steps else None
+    last_step_model = (last_step_info[0] if last_step_info else active_cm.get("latest_model")) or pbtxt_detected
+    last_step_invoked_id = (last_step_info[1] if last_step_info else active_cm.get("latest_invoked_id")) or last_step_model
+    latest_step_sig = (s_conv_id, last_step_idx, last_step_model) if s_conv_id and s_steps else None
+
+    active_model, detected_model = _resolve_active_model(
+        cfg,
+        models_dict,
+        latest_conv_model=last_step_model,
+        latest_step_sig=latest_step_sig,
+    )
+    active_plan = cfg.get("active_plan", "free")
+    fallback_info = {"display_name": active_model, "context_window": 1048576, "tiers": [{"hit": 0.075, "miss": 0.75, "out": 3.75}]}
+    model_info = models_dict.get(active_model, fallback_info)
+    ctx_window = int(model_info.get("context_window") or pricing.get("context_window") or 1048576)
+    limits_cfg = pricing.get("limits", {}).get(active_plan, {"rpm": 15, "tpm": 1000000, "rpd": 1500})
+
     t_turns = 0
     t_inp = 0
     t_cache = 0
     t_out = 0
+    today_cost_usd = 0.0
+    today_savings_usd = 0.0
     rpm_count = 0
     tpm_tokens = 0
 
@@ -906,51 +1089,98 @@ def _collect_stats_uncached(requested_conv_id=None):
         if not entry:
             continue
         cid = entry.get("conv_id") or ""
-        attr_m = get_conv_model(cid) or detected_model
-        pname = models_dict.get(attr_m, {}).get("quota_pool", attr_m)
-        pb = pool_buckets.get(pname)
+        cm = active_cm if (cid and cid == s_conv_id) else get_conv_step_models(cid, detected_model)
+        step_map = cm.get("step_map", {})
+        conv_fb_model = cm.get("latest_model") or detected_model or active_model
+        if conv_fb_model not in models_dict:
+            conv_fb_model = active_model
         for s in entry["steps"]:
+            s_info = step_map.get(s["step_index"])
+            s_model = (s_info[0] if s_info else conv_fb_model) or active_model
+            if s_model not in models_dict:
+                s_model = active_model
             c_str = s["created_at"][:10]
             if c_str in (today_utc_str, today_local_str):
                 t_turns += 1
                 t_inp += s["input_tokens"]
                 t_cache += s["cache_read_tokens"]
                 t_out += s["output_tokens"]
+                sc_step = calculate_cost(s["input_tokens"], s["cache_read_tokens"], s["output_tokens"], s_model, pricing)
+                today_cost_usd += sc_step["raw_cost_usd"]
+                today_savings_usd += sc_step["raw_savings_usd"]
             ts = s["ts"]
             if ts > 0:
                 age = now_ts - ts
                 if age <= 60.0:
                     rpm_count += 1
                     tpm_tokens += s["total_tokens"]
-                if pb is not None and age <= 7 * 86400:
-                    eff_tok = s["input_tokens"] + s["output_tokens"] + int(s["cache_read_tokens"] * 0.08)
-                    if pb["oldest_7d"] is None or ts < pb["oldest_7d"]:
-                        pb["oldest_7d"] = ts
-                    pb["t7"] += 1
-                    pb["tok7"] += eff_tok
-                    if age <= 5 * 3600:
-                        if pb["oldest_5h"] is None or ts < pb["oldest_5h"]:
-                            pb["oldest_5h"] = ts
-                        pb["t5"] += 1
-                        pb["tok5"] += eff_tok
+                if age <= 7 * 86400:
+                    pname = models_dict.get(s_model, {}).get("quota_pool", s_model)
+                    pb = pool_buckets.get(pname)
+                    if pb is not None:
+                        eff_tok = s["input_tokens"] + s["output_tokens"] + int(s["cache_read_tokens"] * 0.08)
+                        if pb["oldest_7d"] is None or ts < pb["oldest_7d"]:
+                            pb["oldest_7d"] = ts
+                        pb["t7"] += 1
+                        pb["tok7"] += eff_tok
+                        if age <= 5 * 3600:
+                            if pb["oldest_5h"] is None or ts < pb["oldest_5h"]:
+                                pb["oldest_5h"] = ts
+                            pb["t5"] += 1
+                            pb["tok5"] += eff_tok
 
-    today_cost = calculate_cost(t_inp, t_cache, t_out, active_model, pricing)
+    today_cost = {
+        "cost_usd": round(today_cost_usd, 5),
+        "cost_cny": round(today_cost_usd * rate, 4),
+        "savings_usd": round(today_savings_usd, 5),
+        "savings_cny": round(today_savings_usd * rate, 4),
+    }
     today_hit_rate = round((t_cache / (t_inp + t_cache)) * 100, 1) if (t_inp + t_cache) > 0 else 0.0
 
-    s_conv_id = active_entry["conv_id"] if active_entry else ""
-    s_steps = active_entry["steps"] if active_entry else []
     s_inp = sum(x["input_tokens"] for x in s_steps)
     s_cache = sum(x["cache_read_tokens"] for x in s_steps)
     s_out = sum(x["output_tokens"] for x in s_steps)
     s_tot = s_inp + s_cache + s_out
-    s_cost = calculate_cost(s_inp, s_cache, s_out, active_model, pricing)
+
+    s_step_map = active_cm.get("step_map", {})
+    s_fb_model = active_cm.get("latest_model") or active_model
+    if s_fb_model not in models_dict:
+        s_fb_model = active_model
+    s_fb_invoked = active_cm.get("latest_invoked_id") or s_fb_model
+
+    s_cost_usd = 0.0
+    s_savings_usd = 0.0
+    for x in s_steps:
+        x_info = s_step_map.get(x["step_index"])
+        x_model = (x_info[0] if x_info else s_fb_model) or active_model
+        if x_model not in models_dict:
+            x_model = active_model
+        xc = calculate_cost(x["input_tokens"], x["cache_read_tokens"], x["output_tokens"], x_model, pricing)
+        s_cost_usd += xc["raw_cost_usd"]
+        s_savings_usd += xc["raw_savings_usd"]
+
+    s_cost = {
+        "cost_usd": round(s_cost_usd, 5),
+        "cost_cny": round(s_cost_usd * rate, 4),
+        "savings_usd": round(s_savings_usd, 5),
+        "savings_cny": round(s_savings_usd * rate, 4),
+    }
     s_hit_rate = round((s_cache / (s_inp + s_cache)) * 100, 1) if (s_inp + s_cache) > 0 else 0.0
 
     if s_steps:
         last_s = s_steps[-1]
-        lt_cost = calculate_cost(last_s["input_tokens"], last_s["cache_read_tokens"], last_s["output_tokens"], active_model, pricing)
+        ls_info = s_step_map.get(last_s["step_index"])
+        ls_model = (ls_info[0] if ls_info else s_fb_model) or active_model
+        if ls_model not in models_dict:
+            ls_model = active_model
+        ls_invoked_id = (ls_info[1] if ls_info else s_fb_invoked) or ls_model
+        ls_short = models_dict.get(ls_model, {}).get("short_name", ls_model)
+        lt_cost = calculate_cost(last_s["input_tokens"], last_s["cache_read_tokens"], last_s["output_tokens"], ls_model, pricing)
         last_turn = {
             "step_index": last_s["step_index"],
+            "model": ls_model,
+            "model_short": ls_short,
+            "invoked_model_id": ls_invoked_id,
             "input_tokens": last_s["input_tokens"],
             "cache_read_tokens": last_s["cache_read_tokens"],
             "output_tokens": last_s["output_tokens"],
@@ -964,8 +1194,13 @@ def _collect_stats_uncached(requested_conv_id=None):
         }
         cur_ctx = last_s["total_tokens"]
     else:
+        ls_model = active_model
+        ls_invoked_id = last_step_invoked_id or active_model
         last_turn = {
             "step_index": 0,
+            "model": ls_model,
+            "model_short": models_dict.get(ls_model, {}).get("short_name", ls_model),
+            "invoked_model_id": ls_invoked_id,
             "input_tokens": 0,
             "cache_read_tokens": 0,
             "output_tokens": 0,
@@ -984,10 +1219,19 @@ def _collect_stats_uncached(requested_conv_id=None):
     recent_turns = []
     for idx, st_item in enumerate(s_steps[-12:]):
         turn_num = max(1, len(s_steps) - len(s_steps[-12:]) + idx + 1)
-        c_item = calculate_cost(st_item["input_tokens"], st_item["cache_read_tokens"], st_item["output_tokens"], active_model, pricing)
+        st_info = s_step_map.get(st_item["step_index"])
+        st_model = (st_info[0] if st_info else s_fb_model) or active_model
+        if st_model not in models_dict:
+            st_model = active_model
+        st_invoked_id = (st_info[1] if st_info else s_fb_invoked) or st_model
+        st_short = models_dict.get(st_model, {}).get("short_name", st_model)
+        c_item = calculate_cost(st_item["input_tokens"], st_item["cache_read_tokens"], st_item["output_tokens"], st_model, pricing)
         recent_turns.append({
             "turn": turn_num,
             "step_index": st_item["step_index"],
+            "model": st_model,
+            "model_short": st_short,
+            "invoked_model_id": st_invoked_id,
             "input_tokens": st_item["input_tokens"],
             "cache_read_tokens": st_item["cache_read_tokens"],
             "output_tokens": st_item["output_tokens"],
@@ -1138,6 +1382,7 @@ def _collect_stats_uncached(requested_conv_id=None):
         "config": {
             "active_model": active_model,
             "active_model_name": model_info.get("display_name", active_model),
+            "invoked_model_id": last_step_invoked_id or active_model,
             "active_plan": active_plan,
             "sound_enabled": bool(cfg.get("sound_enabled", True)),
             "cache_sound_enabled": bool(cfg.get("cache_sound_enabled", False)),

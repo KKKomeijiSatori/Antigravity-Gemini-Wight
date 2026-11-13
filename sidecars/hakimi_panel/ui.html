@@ -607,7 +607,10 @@
   <div class="card">
     <div class="section-title">
       <span>🎯 最新一轮消耗与缓存审计 (Last Turn)</span>
-      <span class="hit-pill" id="txtLastHitRate">🌟 0% 缓存命中</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <span id="txtLastModel" style="font-size:10.5px;color:var(--blue);font-weight:600;"></span>
+        <span class="hit-pill" id="txtLastHitRate">🌟 0% 缓存命中</span>
+      </div>
     </div>
 
     <div class="token-grid">
@@ -951,6 +954,13 @@
 
       // Last Turn
       const lt = data.last_turn || {};
+      const ltModelEl = document.getElementById('txtLastModel');
+      if (ltModelEl) {
+        const shortLabel = lt.model_short || lt.model || '';
+        const rawInvoked = lt.invoked_model_id || lt.model || '';
+        ltModelEl.innerText = shortLabel ? `[${shortLabel}]` : '';
+        ltModelEl.title = rawInvoked ? `实际调用模型 ID: ${rawInvoked}` : '';
+      }
       document.getElementById('txtLastHitRate').innerText = `🌟 ${lt.cache_hit_rate || 0}% 缓存命中`;
       document.getElementById('txtLastIn').innerText = formatNum(lt.input_tokens);
       document.getElementById('txtLastCache').innerText = formatNum(lt.cache_read_tokens);
@@ -997,7 +1007,7 @@
           <div class="turn-row">
             <div class="turn-left">
               <div class="turn-title">#${t.turn} ${escapeHtml(t.query || 'Agent 思考与工具调用')}</div>
-              <div class="turn-meta">入 ${formatK(t.input_tokens)} · 缓 ${formatK(t.cache_read_tokens)} (${t.cache_hit_rate}%) · 出 ${formatK(t.output_tokens)}</div>
+              <div class="turn-meta">${t.model_short ? `<span title="实际调用模型 ID: ${escapeHtml(t.invoked_model_id || t.model || '')}" style="color:var(--blue);font-weight:600;">[${escapeHtml(t.model_short)}]</span> · ` : ''}入 ${formatK(t.input_tokens)} · 缓 ${formatK(t.cache_read_tokens)} (${t.cache_hit_rate}%) · 出 ${formatK(t.output_tokens)}</div>
             </div>
             <div class="turn-right">
               <div class="turn-cost">¥${Number(t.cost_cny || 0).toFixed(4)}</div>

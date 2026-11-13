@@ -27,6 +27,8 @@ class AntigravityMonitor {
     [hashtable]$ConvModelCache = @{}
 
     [hashtable]$LastTurn = @{
+        Model = ""
+        InvokedModelId = ""
         InputTokens = 0L
         CacheReadTokens = 0L
         OutputTokens = 0L
@@ -52,6 +54,8 @@ class AntigravityMonitor {
         CostCNY = 0.0
         SavingsUSD = 0.0
         SavingsCNY = 0.0
+        RawCostUSD = 0.0
+        RawSavingsUSD = 0.0
     }
 
     [hashtable]$Today = @{
@@ -228,13 +232,13 @@ class AntigravityMonitor {
     [string]MapRawModelKey([string]$rawText) {
         if ([string]::IsNullOrWhiteSpace($rawText)) { return "" }
         $t = $rawText.ToLowerInvariant()
-        if ($t -match 'model_placeholder_m525|model_placeholder_m526|model_placeholder_m527|model_placeholder_m528|gemini-4-hydrogen|hydrogen') {
+        if ($t -match 'model_placeholder_m525|model_placeholder_m526|model_placeholder_m527|model_placeholder_m528|model_placeholder_m669|gemini-flash-worker-agy|gemini-flash-worker|flash-worker|gemini-4-hydrogen|hydrogen') {
             return "gemini-4-hydrogen"
         }
         if ($t -match 'model_placeholder_m670|gemini-4-carbon|carbon') {
             return "gemini-4-carbon"
         }
-        if ($t -match 'model_placeholder_m417|model_placeholder_m418|model_placeholder_m419|gemini-4-argon|argon') {
+        if ($t -match 'model_placeholder_m417|model_placeholder_m418|model_placeholder_m419|model_placeholder_m668|gemini-pro-orchestrator-g1-pro|gemini-pro-orchestrator|orchestrator|gemini-4-argon|argon') {
             return "gemini-4-argon"
         }
         if ($t -match 'model_placeholder_m400|model_placeholder_m401|model_placeholder_m402|model_placeholder_m26|claude-opus|opus') {
@@ -243,7 +247,7 @@ class AntigravityMonitor {
         if ($t -match 'model_placeholder_m403|model_placeholder_m404|model_placeholder_m405|claude-sonnet|sonnet') {
             return "claude-sonnet-5-5"
         }
-        if ($t -match 'model_placeholder_m318|model_placeholder_m319|model_placeholder_m320|gemini-3\.8-flash|flash') {
+        if ($t -match 'model_placeholder_m318|model_placeholder_m319|model_placeholder_m320|model_placeholder_m322|gemini-3\.8-flash-tiered|gemini-3\.8-flash-n|gemini-3\.8-flash|flash') {
             return "gemini-3.8-flash"
         }
         return ""
@@ -499,28 +503,48 @@ class AntigravityMonitor {
     }
 
     [string]GetConversationModel([string]$convId) {
-        if ([string]::IsNullOrEmpty($convId)) { return $this.ActiveModel }
-        if ($this.ConvModelCache.ContainsKey($convId)) {
-            return [string]$this.ConvModelCache[$convId]
-        }
+        if ([string]::IsNullOrEmpty($convId)) { return $this.DetectAntigravityActiveModel() }
 
         $dbPath = Join-Path (Join-Path $this.AgyDataPath "conversations") "$convId.db"
         if (Test-Path $dbPath) {
             try {
-                $bytes = [System.IO.File]::ReadAllBytes($dbPath)
-                $chunkLen = [Math]::Min(120000, $bytes.Length)
-                $latin1 = [System.Text.Encoding]::GetEncoding("ISO-8859-1").GetString($bytes, [Math]::Max(0, $bytes.Length - $chunkLen), $chunkLen)
-                $mapped = $this.MapRawModelKey($latin1)
+                $fi = [System.IO.FileInfo]::new($dbPath)
+                $sig = "$($fi.Length)|$($fi.LastWriteTimeUtc.Ticks)"
+                if ($this.ConvModelCache.ContainsKey($convId)) {
+                    $entry = $this.ConvModelCache[$convId]
+                    if ($entry -is [hashtable] -and $entry.Sig -eq $sig -and ![string]::IsNullOrEmpty([string]$entry.Model)) {
+                        return [string]$entry.Model
+                    }
+                }
+
+                $fs = [System.IO.FileStream]::new($dbPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+                $chunkLen = [int][Math]::Min(262144L, $fs.Length)
+                $buf = [byte[]]::new($chunkLen)
+                if ($fs.Length -gt $chunkLen) {
+                    $fs.Seek($fs.Length - $chunkLen, [System.IO.SeekOrigin]::Begin) | Out-Null
+                }
+                $read = $fs.Read($buf, 0, $chunkLen)
+                $fs.Dispose()
+
+                $latin1 = [System.Text.Encoding]::GetEncoding("ISO-8859-1").GetString($buf, 0, $read)
+                $pattern = '((?:gemini|claude|gpt)-[a-z0-9.\-]+)[\s\S]{1,260}?model_enum[^\w]*(MODEL_[A-Z0-9_]+)|model_enum[^\w]*(MODEL_[A-Z0-9_]+)'
+                $matches = [regex]::Matches($latin1, $pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+                $mapped = ""
+                for ($i = $matches.Count - 1; $i -ge 0; $i--) {
+                    $m = $matches[$i]
+                    $rawId = $m.Groups[1].Value
+                    $enumStr = if (![string]::IsNullOrEmpty($m.Groups[2].Value)) { $m.Groups[2].Value } else { $m.Groups[3].Value }
+                    $mapped = $this.MapRawModelKey("$rawId $enumStr")
+                    if (![string]::IsNullOrEmpty($mapped)) { break }
+                }
                 if (![string]::IsNullOrEmpty($mapped)) {
-                    $this.ConvModelCache[$convId] = $mapped
+                    $this.ConvModelCache[$convId] = @{ Sig = $sig; Model = $mapped }
                     return $mapped
                 }
             } catch {}
         }
 
-        $detected = $this.DetectAntigravityActiveModel()
-        $this.ConvModelCache[$convId] = $detected
-        return $detected
+        return $this.DetectAntigravityActiveModel()
     }
 
     [hashtable]CalculateCost([long]$inputTokens, [long]$cacheTokens, [long]$outputTokens, [string]$modelKey) {
@@ -555,6 +579,8 @@ class AntigravityMonitor {
             CostCNY = [Math]::Round($costUSD * $rate, 4)
             SavingsUSD = [Math]::Round($savingsUSD, 6)
             SavingsCNY = [Math]::Round($savingsUSD * $rate, 4)
+            RawCostUSD = $costUSD
+            RawSavingsUSD = $savingsUSD
             HitRate = [Math]::Round($hitRate * 100.0, 1)
         }
     }
@@ -590,6 +616,8 @@ class AntigravityMonitor {
         $this.Session.CostCNY = 0.0
         $this.Session.SavingsUSD = 0.0
         $this.Session.SavingsCNY = 0.0
+        $this.Session.RawCostUSD = 0.0
+        $this.Session.RawSavingsUSD = 0.0
     }
 
     [void]ReadEntireCurrentTranscript() {
@@ -684,6 +712,8 @@ class AntigravityMonitor {
             # 2. Sync LastTurn
             if ($data.last_turn) {
                 $lt = $data.last_turn
+                $this.LastTurn.Model = if ($null -ne $lt.model) { [string]$lt.model } else { "" }
+                $this.LastTurn.InvokedModelId = if ($null -ne $lt.invoked_model_id) { [string]$lt.invoked_model_id } else { "" }
                 $this.LastTurn.InputTokens = [long]$lt.input_tokens
                 $this.LastTurn.CacheReadTokens = [long]$lt.cache_read_tokens
                 $this.LastTurn.OutputTokens = [long]$lt.output_tokens
@@ -850,11 +880,20 @@ class AntigravityMonitor {
             $rate = [Math]::Round(($cache / [double]($inp + $cache)) * 100.0, 1)
         }
 
+        $stepModel = $this.GetConversationModel($this.CurrentConvId)
+        $stepCost = $this.CalculateCost($inp, $cache, $out, $stepModel)
+
+        $this.LastTurn.Model = $stepModel
+        $this.LastTurn.InvokedModelId = $stepModel
         $this.LastTurn.InputTokens = $inp
         $this.LastTurn.CacheReadTokens = $cache
         $this.LastTurn.OutputTokens = $out
         $this.LastTurn.TotalTokens = $tot
         $this.LastTurn.CacheHitRate = $rate
+        $this.LastTurn.CostUSD = $stepCost.CostUSD
+        $this.LastTurn.CostCNY = $stepCost.CostCNY
+        $this.LastTurn.SavingsUSD = $stepCost.SavingsUSD
+        $this.LastTurn.SavingsCNY = $stepCost.SavingsCNY
 
         $this.Session.Turns += 1
         $this.Session.InputTokens += $inp
@@ -862,6 +901,14 @@ class AntigravityMonitor {
         $this.Session.OutputTokens += $out
         $this.Session.TotalTokens += $tot
         $this.Session.CurrentContext = $tot
+        $this.Session.RawCostUSD += [double]$stepCost.RawCostUSD
+        $this.Session.RawSavingsUSD += [double]$stepCost.RawSavingsUSD
+
+        $rateCny = [double]$this.Pricing.usd_to_cny
+        $this.Session.CostUSD = [Math]::Round($this.Session.RawCostUSD, 6)
+        $this.Session.CostCNY = [Math]::Round($this.Session.RawCostUSD * $rateCny, 4)
+        $this.Session.SavingsUSD = [Math]::Round($this.Session.RawSavingsUSD, 6)
+        $this.Session.SavingsCNY = [Math]::Round($this.Session.RawSavingsUSD * $rateCny, 4)
 
         if ($this.RateLimits.ContextWindow -gt 0) {
             $this.Session.ContextPct = [Math]::Round(($tot / [double]$this.RateLimits.ContextWindow) * 100.0, 1)
@@ -878,16 +925,28 @@ class AntigravityMonitor {
     [void]RecalculateSessionCost() {
         $convModel = $this.GetConversationModel($this.CurrentConvId)
         $lt = $this.CalculateCost($this.LastTurn.InputTokens, $this.LastTurn.CacheReadTokens, $this.LastTurn.OutputTokens, $convModel)
+        $this.LastTurn.Model = $convModel
+        if ([string]::IsNullOrEmpty([string]$this.LastTurn.InvokedModelId)) {
+            $this.LastTurn.InvokedModelId = $convModel
+        }
         $this.LastTurn.CostUSD = $lt.CostUSD
         $this.LastTurn.CostCNY = $lt.CostCNY
         $this.LastTurn.SavingsUSD = $lt.SavingsUSD
         $this.LastTurn.SavingsCNY = $lt.SavingsCNY
 
-        $sc = $this.CalculateCost($this.Session.InputTokens, $this.Session.CacheReadTokens, $this.Session.OutputTokens, $convModel)
-        $this.Session.CostUSD = $sc.CostUSD
-        $this.Session.CostCNY = $sc.CostCNY
-        $this.Session.SavingsUSD = $sc.SavingsUSD
-        $this.Session.SavingsCNY = $sc.SavingsCNY
+        if ([double]$this.Session.RawCostUSD -gt 0 -or $this.Session.Turns -eq 0) {
+            $rateCny = [double]$this.Pricing.usd_to_cny
+            $this.Session.CostUSD = [Math]::Round([double]$this.Session.RawCostUSD, 6)
+            $this.Session.CostCNY = [Math]::Round([double]$this.Session.RawCostUSD * $rateCny, 4)
+            $this.Session.SavingsUSD = [Math]::Round([double]$this.Session.RawSavingsUSD, 6)
+            $this.Session.SavingsCNY = [Math]::Round([double]$this.Session.RawSavingsUSD * $rateCny, 4)
+        } else {
+            $sc = $this.CalculateCost($this.Session.InputTokens, $this.Session.CacheReadTokens, $this.Session.OutputTokens, $convModel)
+            $this.Session.CostUSD = $sc.CostUSD
+            $this.Session.CostCNY = $sc.CostCNY
+            $this.Session.SavingsUSD = $sc.SavingsUSD
+            $this.Session.SavingsCNY = $sc.SavingsCNY
+        }
     }
 
     [void]ScanAllWindows() {
@@ -901,6 +960,7 @@ class AntigravityMonitor {
         $cutoff1m = $nowUtc.AddSeconds(-60)
 
         $tTurns = 0; $tInp = 0L; $tCache = 0L; $tOut = 0L
+        $tCostUsd = 0.0; $tSavingsUsd = 0.0
         $oldest5h = [datetime]::MaxValue
         $oldest7d = [datetime]::MaxValue
 
@@ -966,6 +1026,9 @@ class AntigravityMonitor {
                         $tInp += $sInp
                         $tCache += $sCache
                         $tOut += $sOut
+                        $scToday = $this.CalculateCost($sInp, $sCache, $sOut, $convModel)
+                        $tCostUsd += [double]$scToday.RawCostUSD
+                        $tSavingsUsd += [double]$scToday.RawSavingsUSD
                     }
 
                     if ($stUtc -ge $cutoff1m) {
@@ -993,11 +1056,11 @@ class AntigravityMonitor {
         $this.Today.CacheReadTokens = $tCache
         $this.Today.OutputTokens = $tOut
         $this.Today.TotalTokens = $tInp + $tCache + $tOut
-        $tc = $this.CalculateCost($tInp, $tCache, $tOut, $this.ActiveModel)
-        $this.Today.CostUSD = $tc.CostUSD
-        $this.Today.CostCNY = $tc.CostCNY
-        $this.Today.SavingsUSD = $tc.SavingsUSD
-        $this.Today.SavingsCNY = $tc.SavingsCNY
+        $rateToday = [double]$this.Pricing.usd_to_cny
+        $this.Today.CostUSD = [Math]::Round($tCostUsd, 6)
+        $this.Today.CostCNY = [Math]::Round($tCostUsd * $rateToday, 4)
+        $this.Today.SavingsUSD = [Math]::Round($tSavingsUsd, 6)
+        $this.Today.SavingsCNY = [Math]::Round($tSavingsUsd * $rateToday, 4)
         $this.RateLimits.CurrentRPD = $tTurns
 
         # Fetch official live quotas from Antigravity language_server (HTTPS + HTTP)

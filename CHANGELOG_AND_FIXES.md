@@ -180,3 +180,19 @@
   - 在 `OnWinEvent` 与 `MoveWidgetPhysical` / `MoveDetailPhysical` 中增加宿主区域与目标坐标去重，避免未发生位移时的冗余 `SetWindowPos` 重绘；宿主隐藏时跳过呼吸动画更新。
   - 在 [`src/HakimiWidget.ps1`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/HakimiWidget.ps1) 中新增 `Get-FrozenBrush` 冻结画刷缓存与 `$ModelQuotaStack` 内容签名增量更新，仅在详情窗打开且配额数据实际变化时重绘卡片；在 `Set-BubbleVisible` 中跳过无变更磁盘写盘，并将退出请求与 [`src/AntigravityMonitor.ps1`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/AntigravityMonitor.ps1) 的 `SyncFromSidecar()` / `CallLanguageServerGetUserStatus()` 统一设置为 `$req.Proxy = $null` 直连。
 
+---
+
+### 14. Orchestrator 模式逐轮真实调用模型 ID 抓取与精准分步计价 (v3.2)
+- **核心问题**：
+  - Antigravity 新增 **Orchestrator 模式**（如 `Orchestrator (Argon)` -> `MODEL_PLACEHOLDER_M668`），同一会话中会在规划轮调用旗舰规划模型 `gemini-pro-orchestrator-g1-pro`（按 `gemini-4-argon` `$2/$10`、命中 `$0.10` 及 `argon` 独立池计费），在执行轮自动下发给高速执行模型 `gemini-flash-worker-agy`（`MODEL_PLACEHOLDER_M669`，按 `gemini-4-hydrogen` `$0.75/$3.75`、命中 `$0.075` 及 `flash_hydrogen` 池计费）。
+  - 旧版记账逻辑（[`sidecars/hakimi_panel/server.py`](file:///e:/Antigravity/Gemini-Hakimi-Widget/sidecars/hakimi_panel/server.py) 与 [`src/AntigravityMonitor.ps1`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/AntigravityMonitor.ps1)）仅按单个全局 `active_model` 或整会话单一缓存 `get_conv_model(conv_id)` 统算 `today` / `session` / `last_turn` / `recent_turns` 账单，且未映射 `MODEL_PLACEHOLDER_M668` / `M669` / `M322`。
+- **修复与升级**：
+  - **逐轮真实调用模型 ID 提取 (`get_conv_step_models`)**：在 [`sidecars/hakimi_panel/server.py`](file:///e:/Antigravity/Gemini-Hakimi-Widget/sidecars/hakimi_panel/server.py) 中通过只读 SQLite 增量查询 `conversations/<conv_id>.db` 的 `gen_metadata` 表（解码二进制头部 packed varints `step_index` 与尾部 `last_step_index`、`model_enum` 及真实后端模型 ID 字符串），精准建立每一步 `step_index -> (canonical_model, invoked_model_id, model_enum)` 映射，并按文件 `mtime + size + last_idx` 增量缓存。
+  - **新增映射规则**：在 `server.py` 的 `_MODEL_MATCH_RULES` 与 [`src/AntigravityMonitor.ps1`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/AntigravityMonitor.ps1) 的 `MapRawModelKey` 中加入：
+    - `MODEL_PLACEHOLDER_M669` / `gemini-flash-worker-agy` -> `gemini-4-hydrogen`
+    - `MODEL_PLACEHOLDER_M668` / `gemini-pro-orchestrator-g1-pro` -> `gemini-4-argon`
+    - `MODEL_PLACEHOLDER_M322` / `gemini-3.8-flash-tiered` -> `gemini-3.8-flash`
+  - **逐 Step 独立计费与额度池归属**：`last_turn`、`recent_turns`、`session` 累计与 `today` 累计均按各自 `step_index` 实际调用的模型费率逐条结算未舍入 USD 后汇总；7 天/5 小时本地估算 `pool_buckets` 同步按每条 step 自身模型池分别入账。
+  - **前端展示透传**（[`sidecars/hakimi_panel/ui.html`](file:///e:/Antigravity/Gemini-Hakimi-Widget/sidecars/hakimi_panel/ui.html)）：在 **最新一轮 (Last Turn)** 标题栏与 **最近轮次明细 (Turn Ledger)** 每行中显示每轮真实模型徽标（悬停可查看完整 `invoked_model_id`）。
+
+
