@@ -1180,6 +1180,7 @@ function Update-UI {
         "argon"          = @{ Bg = "#264F46E5"; Border = "#66818CF8"; Text = "#A5B4FC" }
         "claude"         = @{ Bg = "#22F59E0B"; Border = "#55F59E0B"; Text = "#FCD34D" }
         "carbon"         = @{ Bg = "#22A855F7"; Border = "#55C084FC"; Text = "#D8B4FE" }
+        "neon"           = @{ Bg = "#2406B6D4"; Border = "#5522D3EE"; Text = "#22D3EE" }
     }
 
     $ModelQuotaStack.Children.Clear()

@@ -1,8 +1,8 @@
 ﻿<#
 .SYNOPSIS
     Antigravity Token Monitor & Live Official Quota Synchronizer
-    Supports 6 Models across 4 Independent Quota Pools:
-    - Flash/H Shared Pool: Gemini 4 Hydrogen, Gemini 3.8 Flash
+    Supports 7 Models across 4 Independent Quota Pools:
+    - Neon/H/F Shared Pool: Gemini 4 Neon, Gemini 4 Hydrogen, Gemini 3.8 Flash
     - Argon Independent Pool: Gemini 4 Argon
     - Claude Independent Pool: Claude Opus 5.5, Claude Sonnet 5.5
     - Carbon Independent Pool: Gemini 4 Carbon (Disabled / Ultra)
@@ -79,7 +79,7 @@ class AntigravityMonitor {
         RemainingPct = 100
         ResetDisplay = "重置 --:--"
         RowLabel = "当前池"
-        PoolLabel = "Flash/H 共享池"
+        PoolLabel = "Neon/H/F 共享池"
         WindowLabel = "5h 周期池"
         Disabled = $false
         IsWeekly = $false
@@ -232,6 +232,9 @@ class AntigravityMonitor {
     [string]MapRawModelKey([string]$rawText) {
         if ([string]::IsNullOrWhiteSpace($rawText)) { return "" }
         $t = $rawText.ToLowerInvariant()
+        if ($t -match 'model_placeholder_m532|model_placeholder_m533|model_placeholder_m534|model_placeholder_m535|model_placeholder_m537|gemini-pro-orchestrator-neon|gemini-4-neon|neon') {
+            return "gemini-4-neon"
+        }
         if ($t -match 'model_placeholder_m525|model_placeholder_m526|model_placeholder_m527|model_placeholder_m528|model_placeholder_m669|gemini-flash-worker-agy|gemini-flash-worker|flash-worker|gemini-4-hydrogen|hydrogen') {
             return "gemini-4-hydrogen"
         }
@@ -485,7 +488,9 @@ class AntigravityMonitor {
             }
 
             foreach ($pair in @(
+                @("gemini-4-neon", "gemini-4-hydrogen"),
                 @("gemini-4-hydrogen", "gemini-3.8-flash"),
+                @("gemini-4-neon", "gemini-3.8-flash"),
                 @("claude-opus-5-5", "claude-sonnet-5-5")
             )) {
                 $a = $pair[0]; $b = $pair[1]
@@ -967,6 +972,7 @@ class AntigravityMonitor {
         $this.RecentRequests.Clear()
 
         $realModels = @(
+            "gemini-4-neon",
             "gemini-4-hydrogen",
             "gemini-3.8-flash",
             "gemini-4-argon",
@@ -1164,7 +1170,7 @@ class AntigravityMonitor {
             $this.FiveHour.Disabled = $activeMq.Disabled
             $this.FiveHour.RowLabel = if ($activeMq.Disabled) { "未解锁" } elseif ($activeMq.IsWeekly) { "多日池" } else { "5h 池" }
 
-            $compKey = if ($activeMq.QuotaPool -eq "argon") { "gemini-3.8-flash" } else { "gemini-4-argon" }
+            $compKey = if ($activeMq.QuotaPool -eq "argon") { "gemini-4-neon" } else { "gemini-4-argon" }
             $compMq = $null
             foreach ($item in $this.ModelQuotas) {
                 if ($item.Key -eq $compKey -and !$item.Disabled) { $compMq = $item; break }
@@ -1181,7 +1187,7 @@ class AntigravityMonitor {
             $this.Weekly.UsedPct = (100 - $compMq.RemainingPct)
             $this.Weekly.RemainingPct = $compMq.RemainingPct
             $this.Weekly.ResetDisplay = $compMq.ResetDisplay
-            $this.Weekly.ShortLabel = if ($compMq.QuotaPool -eq "flash_hydrogen") { "Flash/H" } else { [string]$compMq.ShortName }
+            $this.Weekly.ShortLabel = if ($compMq.QuotaPool -eq "flash_hydrogen") { "Neon/H/F" } else { [string]$compMq.ShortName }
             $this.Weekly.PoolLabel = $compMq.PoolLabel
         }
     }

@@ -98,6 +98,7 @@ _LAST_PBTXT_MODEL = None
 _LAST_STEP_MODEL_SIG = None
 
 _MODEL_MATCH_RULES = (
+    ("gemini-4-neon", ("MODEL_PLACEHOLDER_M532", "MODEL_PLACEHOLDER_M533", "MODEL_PLACEHOLDER_M534", "MODEL_PLACEHOLDER_M535", "MODEL_PLACEHOLDER_M537", "gemini-pro-orchestrator-neon", "gemini-4-neon", "neon")),
     ("gemini-4-hydrogen", ("MODEL_PLACEHOLDER_M525", "MODEL_PLACEHOLDER_M526", "MODEL_PLACEHOLDER_M527", "MODEL_PLACEHOLDER_M528", "MODEL_PLACEHOLDER_M669", "gemini-flash-worker-agy", "gemini-flash-worker", "flash-worker", "gemini-4-hydrogen", "hydrogen")),
     ("gemini-4-carbon", ("MODEL_PLACEHOLDER_M670", "gemini-4-carbon", "carbon")),
     ("gemini-4-argon", ("MODEL_PLACEHOLDER_M417", "MODEL_PLACEHOLDER_M418", "MODEL_PLACEHOLDER_M419", "MODEL_PLACEHOLDER_M668", "gemini-pro-orchestrator-g1-pro", "gemini-pro-orchestrator", "orchestrator", "gemini-4-argon", "argon")),
@@ -317,13 +318,23 @@ def get_pricing():
         "default_model": "gemini-4-hydrogen",
         "context_window": 1048576,
         "models": {
+            "gemini-4-neon": {
+                "display_name": "Gemini 4 Neon",
+                "short_name": "4 Neon",
+                "vendor": "Gemini",
+                "badge": "NEW",
+                "quota_pool": "flash_hydrogen",
+                "pool_label": "Neon/H/F 共享池",
+                "context_window": 1048576,
+                "tiers": [{"hit": 0.15, "miss": 3.0, "out": 15.0}]
+            },
             "gemini-4-hydrogen": {
                 "display_name": "Gemini 4 Hydrogen",
                 "short_name": "4 Hydrogen",
                 "vendor": "Gemini",
                 "badge": "NEW",
                 "quota_pool": "flash_hydrogen",
-                "pool_label": "Flash/H 共享池",
+                "pool_label": "Neon/H/F 共享池",
                 "context_window": 1048576,
                 "tiers": [{"hit": 0.075, "miss": 0.75, "out": 3.75}]
             },
@@ -333,7 +344,7 @@ def get_pricing():
                 "vendor": "Gemini",
                 "badge": "FLASH",
                 "quota_pool": "flash_hydrogen",
-                "pool_label": "Flash/H 共享池",
+                "pool_label": "Neon/H/F 共享池",
                 "context_window": 1048576,
                 "tiers": [{"hit": 0.075, "miss": 0.75, "out": 3.75}]
             },
@@ -562,7 +573,9 @@ _DIRECT_HTTPS_OPENER = urllib.request.build_opener(
 )
 
 _SHARED_POOL_PARTNERS = (
+    ("gemini-4-neon", "gemini-4-hydrogen"),
     ("gemini-4-hydrogen", "gemini-3.8-flash"),
+    ("gemini-4-neon", "gemini-3.8-flash"),
     ("claude-opus-5-5", "claude-sonnet-5-5"),
 )
 
@@ -1065,6 +1078,7 @@ def _collect_stats_uncached(requested_conv_id=None):
     tpm_tokens = 0
 
     featured_models = [
+        "gemini-4-neon",
         "gemini-4-hydrogen",
         "gemini-3.8-flash",
         "gemini-4-argon",
@@ -1349,7 +1363,7 @@ def _collect_stats_uncached(requested_conv_id=None):
         active_mq = model_quotas[0]
 
     active_pool = active_mq["quota_pool"] if active_mq else "flash_hydrogen"
-    companion_target = "gemini-3.8-flash" if active_pool == "argon" else "gemini-4-argon"
+    companion_target = "gemini-4-neon" if active_pool == "argon" else "gemini-4-argon"
     companion_mq = next((x for x in model_quotas if x["id"] == companion_target and not x["disabled"]), None)
     if companion_mq is None:
         companion_mq = next((x for x in model_quotas if x["quota_pool"] != active_pool and not x["disabled"]), active_mq)
@@ -1368,7 +1382,7 @@ def _collect_stats_uncached(requested_conv_id=None):
         "used_turns": companion_mq["weekly_used_turns"] if companion_mq else 0,
         "limit_turns": companion_mq["weekly_limit_turns"] if companion_mq else 9000,
         "reset_display": companion_mq["reset_display"] if companion_mq else "实时同步",
-        "short_label": "Flash/H" if (companion_mq and companion_mq["quota_pool"] == "flash_hydrogen") else (companion_mq["short_name"] if companion_mq else "Argon"),
+        "short_label": "Neon/H/F" if (companion_mq and companion_mq["quota_pool"] == "flash_hydrogen") else (companion_mq["short_name"] if companion_mq else "Argon"),
         "pool_label": companion_mq["pool_label"] if companion_mq else "独立池",
     }
 

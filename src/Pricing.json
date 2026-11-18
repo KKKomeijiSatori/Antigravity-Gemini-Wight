@@ -4,14 +4,35 @@
   "default_model": "gemini-4-hydrogen",
   "context_window": 1048576,
   "models": {
+    "gemini-4-neon": {
+      "display_name": "Gemini 4 Neon",
+      "short_name": "4 Neon",
+      "vendor": "Gemini",
+      "badge": "NEW",
+      "quota_pool": "flash_hydrogen",
+      "pool_label": "Neon/H/F 共享池",
+      "note": "反重力最新旗舰深度推理模型 · 与 4 Hydrogen / 3.8 Flash 共享 5h 池 ($3/$15, 缓存命中 $0.15, 95% 折扣)",
+      "context_window": 1048576,
+      "quota_5h_turns": 2500,
+      "quota_5h_tokens": 80000000,
+      "quota_weekly_turns": 15000,
+      "quota_weekly_tokens": 500000000,
+      "tiers": [
+        {
+          "hit": 0.15,
+          "miss": 3.0,
+          "out": 15.0
+        }
+      ]
+    },
     "gemini-4-hydrogen": {
       "display_name": "Gemini 4 Hydrogen",
       "short_name": "4 Hydrogen",
       "vendor": "Gemini",
       "badge": "NEW",
       "quota_pool": "flash_hydrogen",
-      "pool_label": "Flash/H 共享池",
-      "note": "反重力新秀高速主力 · 与 3.8 Flash 共享额度池 ($0.75/$3.75, 缓存命中 $0.075)",
+      "pool_label": "Neon/H/F 共享池",
+      "note": "反重力高速主力 · 与 4 Neon / 3.8 Flash 共享 5h 池 ($0.75/$3.75, 缓存命中 $0.075)",
       "context_window": 1048576,
       "quota_5h_turns": 2500,
       "quota_5h_tokens": 80000000,
@@ -31,8 +52,8 @@
       "vendor": "Gemini",
       "badge": "FLASH",
       "quota_pool": "flash_hydrogen",
-      "pool_label": "Flash/H 共享池",
-      "note": "反重力极速高频主力模型 · 与 4 Hydrogen 共享额度池 ($0.75/$3.75, 缓存命中 $0.075)",
+      "pool_label": "Neon/H/F 共享池",
+      "note": "反重力极速高频主力模型 · 与 4 Neon / 4 Hydrogen 共享 5h 池 ($0.75/$3.75, 缓存命中 $0.075)",
       "context_window": 1048576,
       "quota_5h_turns": 2500,
       "quota_5h_tokens": 80000000,

@@ -836,7 +836,7 @@
 
       // Populate Model Select
       const sel = document.getElementById('modelSelect');
-      if (sel.options.length === 0 && Array.isArray(data.models)) {
+      if (Array.isArray(data.models) && sel.options.length !== data.models.length) {
         sel.innerHTML = data.models.map(m => `<option value="${m.id}">${m.name}</option>`).join('');
       }
       if (sel.value !== currentConfig.active_model) {
@@ -889,7 +889,8 @@
           flash_hydrogen: { bg: 'rgba(16,185,129,0.14)', border: 'rgba(16,185,129,0.35)', text: '#34d399' },
           argon:          { bg: 'rgba(99,102,241,0.16)', border: 'rgba(129,140,248,0.38)', text: '#a5b4fc' },
           claude:         { bg: 'rgba(245,158,11,0.14)', border: 'rgba(245,158,11,0.35)', text: '#fbbf24' },
-          carbon:         { bg: 'rgba(168,85,247,0.14)', border: 'rgba(192,132,252,0.35)', text: '#d8b4fe' }
+          carbon:         { bg: 'rgba(168,85,247,0.14)', border: 'rgba(192,132,252,0.35)', text: '#d8b4fe' },
+          neon:           { bg: 'rgba(6,182,212,0.16)', border: 'rgba(34,211,238,0.38)', text: '#22d3ee' }
         };
         mqList.innerHTML = data.model_quotas.map(m => {
           const isDis = !!m.disabled;

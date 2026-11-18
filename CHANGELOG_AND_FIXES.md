@@ -195,4 +195,17 @@
   - **逐 Step 独立计费与额度池归属**：`last_turn`、`recent_turns`、`session` 累计与 `today` 累计均按各自 `step_index` 实际调用的模型费率逐条结算未舍入 USD 后汇总；7 天/5 小时本地估算 `pool_buckets` 同步按每条 step 自身模型池分别入账。
   - **前端展示透传**（[`sidecars/hakimi_panel/ui.html`](file:///e:/Antigravity/Gemini-Hakimi-Widget/sidecars/hakimi_panel/ui.html)）：在 **最新一轮 (Last Turn)** 标题栏与 **最近轮次明细 (Turn Ledger)** 每行中显示每轮真实模型徽标（悬停可查看完整 `invoked_model_id`）。
 
+---
+
+### 15. 新增 Gemini 4 Neon 与 Orchestrator (Neon) 支持 (v3.3)
+- **新增模型与精确费率配置**：
+  - 在 [`src/Pricing.json`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/Pricing.json) 与 [`sidecars/hakimi_panel/server.py`](file:///e:/Antigravity/Gemini-Hakimi-Widget/sidecars/hakimi_panel/server.py) 默认费率表首项接入 **`Gemini 4 Neon`** (`gemini-4-neon`)：未命中输入 `$3.00 / 1M tokens`、缓存命中输入 `$0.15 / 1M tokens`（95% 折扣）、输出 `$15.00 / 1M tokens`。
+- **真实占位符与调用 ID 映射（优先级防冲突）**：
+  - 通过在线 `language_server` `GetUserStatus` 与 `gen_metadata` 验证确认：`Gemini 4 Neon (High/Medium/Low/XHigh)` 对应 `MODEL_PLACEHOLDER_M532 ~ M535`，`Orchestrator (Neon)` 对应 `MODEL_PLACEHOLDER_M537` 及后端实际调用模型 ID `gemini-pro-orchestrator-neon`。
+  - 在 [`sidecars/hakimi_panel/server.py`](file:///e:/Antigravity/Gemini-Hakimi-Widget/sidecars/hakimi_panel/server.py) `_MODEL_MATCH_RULES` 与 [`src/AntigravityMonitor.ps1`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/AntigravityMonitor.ps1) `MapRawModelKey` 中，将 `gemini-4-neon`（含 `M532~M535`、`M537`、`gemini-pro-orchestrator-neon`）置顶于 `gemini-4-argon` 的通用 `orchestrator` 规则之前，避免 `Orchestrator (Neon)` 被误判为 Argon，同时保持 `M668 / gemini-pro-orchestrator-g1-pro` 准确归入 `gemini-4-argon`。
+- **实时共享额度池同步 (`Neon/H/F 共享池`)**：
+  - 实测 `Gemini 4 Neon`、`Gemini 4 Hydrogen` 与 `Gemini 3.8 Flash` 在反重力后台共享同一 `5h 周期池`，已在 [`src/Pricing.json`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/Pricing.json)、[`server.py`](file:///e:/Antigravity/Gemini-Hakimi-Widget/sidecars/hakimi_panel/server.py) (`_SHARED_POOL_PARTNERS`、`featured_models`、`companion_target`) 与 [`src/AntigravityMonitor.ps1`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/AntigravityMonitor.ps1) (`$realModels`、`$compKey`) 中同步扩展为 7 模型列表，池标签更新为 `Neon/H/F 共享池` / `Neon/H/F`。
+- **多端 UI 与下拉菜单动态刷新**：
+  - [`sidecars/hakimi_panel/ui.html`](file:///e:/Antigravity/Gemini-Hakimi-Widget/sidecars/hakimi_panel/ui.html) 的 `#modelSelect` 由仅首轮填充改为当后端模型数量变更时自动重建下拉列表，并同 [`src/HakimiWidget.ps1`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/HakimiWidget.ps1) 补充 `neon` 配色徽标。
+
 
