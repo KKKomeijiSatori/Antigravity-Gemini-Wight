@@ -655,8 +655,8 @@ function Play-HakimiSound([string]$type) {
     }
 }
 
-# Unlocked Bitmap Loader
-function Read-UnlockedBitmap([string]$Path) {
+# Unlocked Bitmap Loader (DecodePixelWidth=312 cuts 610x610 layered-window memory & resample cost ~3.8x)
+function Read-UnlockedBitmap([string]$Path, [int]$DecodeWidth = 312) {
     if (!(Test-Path -LiteralPath $Path)) { return $null }
     $bytes = [System.IO.File]::ReadAllBytes($Path)
     $ms = [System.IO.MemoryStream]::new($bytes)
@@ -664,6 +664,7 @@ function Read-UnlockedBitmap([string]$Path) {
         $bmp = [System.Windows.Media.Imaging.BitmapImage]::new()
         $bmp.BeginInit()
         $bmp.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+        if ($DecodeWidth -gt 0) { $bmp.DecodePixelWidth = $DecodeWidth }
         $bmp.StreamSource = $ms
         $bmp.EndInit()
         $bmp.Freeze()
@@ -686,6 +687,7 @@ $MascotContainer = $window.FindName("MascotContainer")
 $SquishScale = $window.FindName("SquishScale")
 $BreathTranslate = $window.FindName("BreathTranslate")
 $CharacterImg = $window.FindName("CharacterImg")
+$CharacterBlushImg = $window.FindName("CharacterBlushImg")
 $HeartBadge = $window.FindName("HeartBadge")
 $HeartText = $window.FindName("HeartText")
 $HeartTranslate = $window.FindName("HeartTranslate")
@@ -736,7 +738,7 @@ $MenuFacingScale = $window.FindName("MenuFacingScale")
         Topmost="True" ShowInTaskbar="False" ResizeMode="NoResize">
     <Border Margin="8" CornerRadius="16" Background="#F5131926" BorderBrush="#4D818CF8" BorderThickness="1.5">
         <Border.Effect>
-            <DropShadowEffect Color="#000000" BlurRadius="16" ShadowDepth="4" Opacity="0.42"/>
+            <DropShadowEffect Color="#000000" BlurRadius="14" ShadowDepth="3" Opacity="0.40" RenderingBias="Performance"/>
         </Border.Effect>
         <StackPanel Margin="14,12,14,12">
             <!-- Header -->
@@ -845,10 +847,24 @@ $DetailSaveText = $detailWindow.FindName("DetailSaveText")
 # Load Unlocked Character Images
 $normalImgPath = Join-Path $AssetsDir "gemini_normal.png"
 $blushImgPath = Join-Path $AssetsDir "gemini_blush.png"
-$normalBitmap = Read-UnlockedBitmap $normalImgPath
-$blushBitmap = Read-UnlockedBitmap $blushImgPath
+$normalBitmap = Read-UnlockedBitmap $normalImgPath 312
+$blushBitmap = Read-UnlockedBitmap $blushImgPath 312
 if ($normalBitmap) {
     $CharacterImg.Source = $normalBitmap
+}
+if ($CharacterBlushImg -and $blushBitmap) {
+    $CharacterBlushImg.Source = $blushBitmap
+    $CharacterBlushImg.Opacity = 0.0
+}
+
+function Set-MascotBlush([bool]$blush) {
+    if ($CharacterBlushImg) {
+        $CharacterBlushImg.Opacity = if ($blush) { 1.0 } else { 0.0 }
+    } elseif ($blush -and $blushBitmap) {
+        $CharacterImg.Source = $blushBitmap
+    } elseif (!$blush -and $normalBitmap) {
+        $CharacterImg.Source = $normalBitmap
+    }
 }
 
 # Apply Initial Config (Use Opacity for Bubble visibility to prevent WPF layout jumps!)
@@ -1091,46 +1107,93 @@ function Toggle-DetailWindow {
     }
 }
 
-# Update UI from Monitor
+function New-MonitorSnapshot($mon) {
+    $mqList = [System.Collections.Generic.List[hashtable]]::new()
+    foreach ($mq in $mon.ModelQuotas) {
+        $mqList.Add($mq.Clone())
+    }
+    return @{
+        ActiveModel = [string]$mon.ActiveModel
+        ActivePlan = [string]$mon.ActivePlan
+        LivePlanName = [string]$mon.LivePlanName
+        FiveHour = $mon.FiveHour.Clone()
+        Weekly = $mon.Weekly.Clone()
+        Today = $mon.Today.Clone()
+        RateLimits = $mon.RateLimits.Clone()
+        Session = $mon.Session.Clone()
+        LastTurn = $mon.LastTurn.Clone()
+        ModelQuotas = $mqList
+    }
+}
+
+$script:PricingModels = $Monitor.Pricing.models
+$script:UiData = New-MonitorSnapshot $Monitor
+$script:BgSync = [hashtable]::Synchronized(@{
+    Stop = $false
+    Version = 0L
+    Snapshot = $script:UiData
+    PendingConfig = $null
+    PendingTurn = $null
+    WakeEvent = [System.Threading.AutoResetEvent]::new($false)
+})
+$script:LastUiVersion = 0L
+
+function Invoke-AsyncModelSwitch([string]$modelKey, [string]$planKey) {
+    $script:UiData.ActiveModel = $modelKey
+    $script:UiData.ActivePlan = $planKey
+    foreach ($mq in $script:UiData.ModelQuotas) {
+        $mq.IsActive = ($mq.Key -eq $modelKey)
+    }
+    $state.QuotaStackDirty = $true
+    Update-UI
+    $script:BgSync.PendingConfig = @{
+        active_model = $modelKey
+        active_plan = $planKey
+    }
+    try { [void]$script:BgSync.WakeEvent.Set() } catch {}
+}
+
+# Update UI from Snapshot ($script:UiData) — 0ms I/O on UI thread
 function Update-UI {
-    $mInfo = $Monitor.Pricing.models[$Monitor.ActiveModel]
+    $Ui = $script:UiData
+    $mInfo = $script:PricingModels[$Ui.ActiveModel]
     $shortName = if ($mInfo -and $mInfo.short_name) { $mInfo.short_name } else { "4 Hydrogen" }
     $vendorName = if ($mInfo -and $mInfo.vendor) { $mInfo.vendor } else { "Gemini" }
     $HeaderTitle.Text = "$vendorName 额度池"
     $ActiveModelBadge.Text = $shortName
 
     # 1. Update Base Bubble: Row 1 = Active Model Pool, Row 2 = Companion Independent Pool
-    $isActDis = [bool]$Monitor.FiveHour.Disabled
+    $isActDis = [bool]$Ui.FiveHour.Disabled
     if ($null -ne $FiveHourLabel) {
-        $FiveHourLabel.Text = if ($Monitor.FiveHour.RowLabel) { [string]$Monitor.FiveHour.RowLabel } else { "5h 池" }
+        $FiveHourLabel.Text = if ($Ui.FiveHour.RowLabel) { [string]$Ui.FiveHour.RowLabel } else { "5h 池" }
     }
-    $rem5h = [int]$Monitor.FiveHour.RemainingPct
+    $rem5h = [int]$Ui.FiveHour.RemainingPct
     if ($isActDis) {
         $FiveHourValue.Text = "--"
         $FiveHourValue.Foreground = Get-FrozenBrush "#94A3B8"
         $FiveHourBarFill.Width = 0
-        $FiveHourResetText.Text = "🔒 $($Monitor.FiveHour.ResetDisplay)"
+        $FiveHourResetText.Text = "🔒 $($Ui.FiveHour.ResetDisplay)"
     } else {
         $FiveHourValue.Text = "$rem5h%"
         $FiveHourValue.Foreground = Get-FrozenBrush "#0F172A"
         $FiveHourBarFill.Width = [Math]::Round(118.0 * ($rem5h / 100.0))
-        $FiveHourBarFill.Background = Get-QuotaColorBrush $rem5h ([bool]$Monitor.FiveHour.IsWeekly)
-        $FiveHourResetText.Text = "⏳ $($Monitor.FiveHour.ResetDisplay)"
+        $FiveHourBarFill.Background = Get-QuotaColorBrush $rem5h ([bool]$Ui.FiveHour.IsWeekly)
+        $FiveHourResetText.Text = "⏳ $($Ui.FiveHour.ResetDisplay)"
     }
 
     if ($null -ne $WeeklyLabel) {
-        $WeeklyLabel.Text = if ($Monitor.Weekly.ShortLabel) { [string]$Monitor.Weekly.ShortLabel } else { "Argon" }
+        $WeeklyLabel.Text = if ($Ui.Weekly.ShortLabel) { [string]$Ui.Weekly.ShortLabel } else { "Argon" }
     }
-    $rem7d = [int]$Monitor.Weekly.RemainingPct
+    $rem7d = [int]$Ui.Weekly.RemainingPct
     $WeeklyValue.Text = "$rem7d%"
     $WeeklyBarFill.Width = [Math]::Round(118.0 * ($rem7d / 100.0))
     $WeeklyBarFill.Background = Get-QuotaColorBrush $rem7d $true
-    $WeeklyResetText.Text = "📅 $($Monitor.Weekly.ResetDisplay)"
+    $WeeklyResetText.Text = "📅 $($Ui.Weekly.ResetDisplay)"
 
     $UpdatedText.Text = [string]::Format(
         "今日 ¥{0:F2} · ⚡省 ¥{1:F2} · 详情 ↗",
-        $Monitor.Today.CostCNY,
-        $Monitor.Today.SavingsCNY
+        $Ui.Today.CostCNY,
+        $Ui.Today.SavingsCNY
     )
 
     # 2. Update Adaptive Detail Window (Independent Pool-Aware Per-Model Quotas)
@@ -1143,28 +1206,28 @@ function Update-UI {
         $ToggleCacheSoundText.Foreground = if ($Config.cache_sound_enabled) { Get-FrozenBrush "#34D399" } else { Get-FrozenBrush "#64748B" }
     }
 
-    $DetailPlanBadge.Text = if (![string]::IsNullOrEmpty($Monitor.LivePlanName)) {
-        "$($Monitor.LivePlanName) 实时池"
-    } elseif ($Monitor.ActivePlan -eq "tier1") {
+    $DetailPlanBadge.Text = if (![string]::IsNullOrEmpty($Ui.LivePlanName)) {
+        "$($Ui.LivePlanName) 实时池"
+    } elseif ($Ui.ActivePlan -eq "tier1") {
         "Tier 1 付费层 (5x限额)"
     } else {
         "Free 免费层"
     }
-    $DetailRpmText.Text = "$($Monitor.RateLimits.CurrentRPM) / $($Monitor.RateLimits.MaxRPM)"
-    $DetailTpmText.Text = "$(Format-Tok $Monitor.RateLimits.CurrentTPM) / $(Format-Tok $Monitor.RateLimits.MaxTPM)"
-    $DetailTpsText.Text = "$(Format-Tok $Monitor.RateLimits.CurrentTPS) / $(Format-Tok $Monitor.RateLimits.MaxTPS)"
-    $DetailCtxText.Text = "$($Monitor.Session.ContextPct)% ($(Format-Tok $Monitor.Session.CurrentContext))"
+    $DetailRpmText.Text = "$($Ui.RateLimits.CurrentRPM) / $($Ui.RateLimits.MaxRPM)"
+    $DetailTpmText.Text = "$(Format-Tok $Ui.RateLimits.CurrentTPM) / $(Format-Tok $Ui.RateLimits.MaxTPM)"
+    $DetailTpsText.Text = "$(Format-Tok $Ui.RateLimits.CurrentTPS) / $(Format-Tok $Ui.RateLimits.MaxTPS)"
+    $DetailCtxText.Text = "$($Ui.Session.ContextPct)% ($(Format-Tok $Ui.Session.CurrentContext))"
 
-    $DetailTurnText.Text = "本轮: In $(Format-Tok $Monitor.LastTurn.InputTokens) · Cache $(Format-Tok $Monitor.LastTurn.CacheReadTokens) · Out $(Format-Tok $Monitor.LastTurn.OutputTokens)"
-    $DetailHitText.Text = "命中 $($Monitor.LastTurn.CacheHitRate)%"
-    $DetailTodayText.Text = [string]::Format("今日累计 ({0} 轮): ¥{1:F2}", $Monitor.Today.Turns, $Monitor.Today.CostCNY)
-    $DetailSaveText.Text = [string]::Format("⚡ 缓存已省 ¥{0:F2}", $Monitor.Today.SavingsCNY)
+    $DetailTurnText.Text = "本轮: In $(Format-Tok $Ui.LastTurn.InputTokens) · Cache $(Format-Tok $Ui.LastTurn.CacheReadTokens) · Out $(Format-Tok $Ui.LastTurn.OutputTokens)"
+    $DetailHitText.Text = "命中 $($Ui.LastTurn.CacheHitRate)%"
+    $DetailTodayText.Text = [string]::Format("今日累计 ({0} 轮): ¥{1:F2}", $Ui.Today.Turns, $Ui.Today.CostCNY)
+    $DetailSaveText.Text = [string]::Format("⚡ 缓存已省 ¥{0:F2}", $Ui.Today.SavingsCNY)
 
     $sigParts = New-Object System.Collections.Generic.List[string]
-    foreach ($mq in $Monitor.ModelQuotas) {
+    foreach ($mq in $Ui.ModelQuotas) {
         $sigParts.Add("$($mq.Key):$($mq.RemainingPct):$($mq.Disabled):$($mq.IsActive):$($mq.ResetDisplay)")
     }
-    $quotaSig = "$($Monitor.ActiveModel)|" + ($sigParts -join ";")
+    $quotaSig = "$($Ui.ActiveModel)|" + ($sigParts -join ";")
     if ($quotaSig -ne $state.LastQuotaSig) {
         $state.QuotaStackDirty = $true
     }
@@ -1184,7 +1247,7 @@ function Update-UI {
     }
 
     $ModelQuotaStack.Children.Clear()
-    foreach ($mq in $Monitor.ModelQuotas) {
+    foreach ($mq in $Ui.ModelQuotas) {
         $isAct = [bool]$mq.IsActive
         $isDis = [bool]$mq.Disabled
         $isClaude = ([string]$mq.Vendor -eq "Claude")
@@ -1341,10 +1404,8 @@ function Update-UI {
             if ($mk) {
                 $Config.active_model = $mk
                 Save-Config
-                $Monitor.SetModel($mk, $Config.active_plan)
-                if (!$Monitor.SyncFromSidecar()) { $Monitor.ScanAllWindows() }
                 Play-HakimiSound "press"
-                Update-UI
+                Invoke-AsyncModelSwitch $mk $Config.active_plan
             }
             $e.Handled = $true
         })
@@ -1360,7 +1421,7 @@ if ($CheckOnly) {
     exit 0
 }
 
-$Monitor.OnTurnFinished = {
+$HandleTurnFinished = {
     param($turn)
     try {
         Update-UI
@@ -1454,21 +1515,66 @@ function Snap-MascotToNearestCorner([bool]$forceCornerDock = $false) {
     Update-QuadrantLayout
 }
 
-# Butter-Smooth 60FPS Hardware-Accelerated Q-Elastic Headpat Engine
+# Butter-Smooth 60FPS Hardware-Accelerated Q-Elastic Headpat Engine (Pre-frozen timelines)
 $quadEaseOut = New-Object System.Windows.Media.Animation.QuadraticEase
 $quadEaseOut.EasingMode = [System.Windows.Media.Animation.EasingMode]::EaseOut
+$quadEaseOut.Freeze()
 
 $cubicEaseOut = New-Object System.Windows.Media.Animation.CubicEase
 $cubicEaseOut.EasingMode = [System.Windows.Media.Animation.EasingMode]::EaseOut
+$cubicEaseOut.Freeze()
 
 $sineEaseInOut = New-Object System.Windows.Media.Animation.SineEase
 $sineEaseInOut.EasingMode = [System.Windows.Media.Animation.EasingMode]::EaseInOut
+$sineEaseInOut.Freeze()
+
+$script:AnimPressX = New-Object System.Windows.Media.Animation.DoubleAnimation(1.14, [System.Windows.Duration]::new([TimeSpan]::FromMilliseconds(95)))
+$script:AnimPressX.EasingFunction = $quadEaseOut; $script:AnimPressX.Freeze()
+$script:AnimPressY = New-Object System.Windows.Media.Animation.DoubleAnimation(0.84, [System.Windows.Duration]::new([TimeSpan]::FromMilliseconds(95)))
+$script:AnimPressY.EasingFunction = $quadEaseOut; $script:AnimPressY.Freeze()
+
+$script:AnimHeartTrans = New-Object System.Windows.Media.Animation.DoubleAnimation(-14.0, [System.Windows.Duration]::new([TimeSpan]::FromMilliseconds(220)))
+$script:AnimHeartTrans.EasingFunction = $cubicEaseOut; $script:AnimHeartTrans.Freeze()
+$script:AnimHeartScale = New-Object System.Windows.Media.Animation.DoubleAnimation(1.0, [System.Windows.Duration]::new([TimeSpan]::FromMilliseconds(180)))
+$script:AnimHeartScale.EasingFunction = $cubicEaseOut; $script:AnimHeartScale.Freeze()
+$script:AnimHeartOp = New-Object System.Windows.Media.Animation.DoubleAnimation(1.0, [System.Windows.Duration]::new([TimeSpan]::FromMilliseconds(120)))
+$script:AnimHeartOp.Freeze()
+$script:AnimHeartFade = New-Object System.Windows.Media.Animation.DoubleAnimation(0.0, [System.Windows.Duration]::new([TimeSpan]::FromMilliseconds(400)))
+$script:AnimHeartFade.BeginTime = [TimeSpan]::FromMilliseconds(750)
+$script:AnimHeartFade.EasingFunction = $quadEaseOut; $script:AnimHeartFade.Freeze()
+
+$script:KfReleaseX = New-Object System.Windows.Media.Animation.DoubleAnimationUsingKeyFrames
+$f1X = New-Object System.Windows.Media.Animation.EasingDoubleKeyFrame(0.91, [System.Windows.Media.Animation.KeyTime]::FromTimeSpan([TimeSpan]::FromMilliseconds(120)))
+$f1X.EasingFunction = $cubicEaseOut; $f1X.Freeze()
+$f2X = New-Object System.Windows.Media.Animation.EasingDoubleKeyFrame(1.055, [System.Windows.Media.Animation.KeyTime]::FromTimeSpan([TimeSpan]::FromMilliseconds(240)))
+$f2X.EasingFunction = $sineEaseInOut; $f2X.Freeze()
+$f3X = New-Object System.Windows.Media.Animation.EasingDoubleKeyFrame(0.986, [System.Windows.Media.Animation.KeyTime]::FromTimeSpan([TimeSpan]::FromMilliseconds(360)))
+$f3X.EasingFunction = $sineEaseInOut; $f3X.Freeze()
+$f4X = New-Object System.Windows.Media.Animation.EasingDoubleKeyFrame(1.0, [System.Windows.Media.Animation.KeyTime]::FromTimeSpan([TimeSpan]::FromMilliseconds(480)))
+$f4X.EasingFunction = $quadEaseOut; $f4X.Freeze()
+[void]$script:KfReleaseX.KeyFrames.Add($f1X); [void]$script:KfReleaseX.KeyFrames.Add($f2X); [void]$script:KfReleaseX.KeyFrames.Add($f3X); [void]$script:KfReleaseX.KeyFrames.Add($f4X)
+$script:KfReleaseX.Freeze()
+
+$script:KfReleaseY = New-Object System.Windows.Media.Animation.DoubleAnimationUsingKeyFrames
+$f1Y = New-Object System.Windows.Media.Animation.EasingDoubleKeyFrame(1.13, [System.Windows.Media.Animation.KeyTime]::FromTimeSpan([TimeSpan]::FromMilliseconds(120)))
+$f1Y.EasingFunction = $cubicEaseOut; $f1Y.Freeze()
+$f2Y = New-Object System.Windows.Media.Animation.EasingDoubleKeyFrame(0.955, [System.Windows.Media.Animation.KeyTime]::FromTimeSpan([TimeSpan]::FromMilliseconds(240)))
+$f2Y.EasingFunction = $sineEaseInOut; $f2Y.Freeze()
+$f3Y = New-Object System.Windows.Media.Animation.EasingDoubleKeyFrame(1.014, [System.Windows.Media.Animation.KeyTime]::FromTimeSpan([TimeSpan]::FromMilliseconds(360)))
+$f3Y.EasingFunction = $sineEaseInOut; $f3Y.Freeze()
+$f4Y = New-Object System.Windows.Media.Animation.EasingDoubleKeyFrame(1.0, [System.Windows.Media.Animation.KeyTime]::FromTimeSpan([TimeSpan]::FromMilliseconds(480)))
+$f4Y.EasingFunction = $quadEaseOut; $f4Y.Freeze()
+[void]$script:KfReleaseY.KeyFrames.Add($f1Y); [void]$script:KfReleaseY.KeyFrames.Add($f2Y); [void]$script:KfReleaseY.KeyFrames.Add($f3Y); [void]$script:KfReleaseY.KeyFrames.Add($f4Y)
+$script:KfReleaseY.Freeze()
+
+$script:AnimDragSettle = New-Object System.Windows.Media.Animation.DoubleAnimation(1.0, [System.Windows.Duration]::new([TimeSpan]::FromMilliseconds(180)))
+$script:AnimDragSettle.EasingFunction = $cubicEaseOut; $script:AnimDragSettle.Freeze()
 
 $blushResetTimer = [System.Windows.Threading.DispatcherTimer]::new()
 $blushResetTimer.Interval = [TimeSpan]::FromMilliseconds(1200)
 $blushResetTimer.Add_Tick({
     param($s, $ev)
-    if ($normalBitmap) { $CharacterImg.Source = $normalBitmap }
+    Set-MascotBlush $false
     $s.Stop()
 })
 
@@ -1484,16 +1590,9 @@ function Start-MascotPressSquashAnimation {
     $state.IsSpringRebounding = $true
     $springEndTimer.Stop()
 
-    # 1. 95ms Responsive Press Squash: ScaleX -> 1.14, ScaleY -> 0.84 (Fast cubic ease)
-    $animX = New-Object System.Windows.Media.Animation.DoubleAnimation(1.14, [System.Windows.Duration]::new([TimeSpan]::FromMilliseconds(95)))
-    $animX.EasingFunction = $quadEaseOut
-    $animY = New-Object System.Windows.Media.Animation.DoubleAnimation(0.84, [System.Windows.Duration]::new([TimeSpan]::FromMilliseconds(95)))
-    $animY.EasingFunction = $quadEaseOut
+    $SquishScale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleXProperty, $script:AnimPressX)
+    $SquishScale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleYProperty, $script:AnimPressY)
 
-    $SquishScale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleXProperty, $animX)
-    $SquishScale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleYProperty, $animY)
-
-    # 2. Heart Badge Pop & Float
     if ($HeartTranslate -and $HeartScale) {
         $HeartTranslate.BeginAnimation([System.Windows.Media.TranslateTransform]::YProperty, $null)
         $HeartScale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleXProperty, $null)
@@ -1504,17 +1603,10 @@ function Start-MascotPressSquashAnimation {
         $HeartScale.ScaleX = 0.85
         $HeartScale.ScaleY = 0.85
 
-        $htAnim = New-Object System.Windows.Media.Animation.DoubleAnimation(-14.0, [System.Windows.Duration]::new([TimeSpan]::FromMilliseconds(220)))
-        $htAnim.EasingFunction = $cubicEaseOut
-        $HeartTranslate.BeginAnimation([System.Windows.Media.TranslateTransform]::YProperty, $htAnim)
-
-        $hsAnim = New-Object System.Windows.Media.Animation.DoubleAnimation(1.0, [System.Windows.Duration]::new([TimeSpan]::FromMilliseconds(180)))
-        $hsAnim.EasingFunction = $cubicEaseOut
-        $HeartScale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleXProperty, $hsAnim)
-        $HeartScale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleYProperty, $hsAnim)
-
-        $hoAnim = New-Object System.Windows.Media.Animation.DoubleAnimation(1.0, [System.Windows.Duration]::new([TimeSpan]::FromMilliseconds(120)))
-        $HeartBadge.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $hoAnim)
+        $HeartTranslate.BeginAnimation([System.Windows.Media.TranslateTransform]::YProperty, $script:AnimHeartTrans)
+        $HeartScale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleXProperty, $script:AnimHeartScale)
+        $HeartScale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleYProperty, $script:AnimHeartScale)
+        $HeartBadge.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $script:AnimHeartOp)
     } else {
         $HeartBadge.Opacity = 1.0
     }
@@ -1525,82 +1617,33 @@ function Start-MascotReleaseSpringAnimation {
     $springEndTimer.Stop()
     $springEndTimer.Start()
 
-    # Butter-smooth 480ms Q-elastic jelly rebound (4 keyframes with cubic/sine splines)
-    # (1.14, 0.84) -> Stretch Overshoot (0.91, 1.13) -> Squash Rebound (1.06, 0.95) -> Settle (0.985, 1.015) -> Rest (1.0, 1.0)
-    $kfX = New-Object System.Windows.Media.Animation.DoubleAnimationUsingKeyFrames
-    $kfY = New-Object System.Windows.Media.Animation.DoubleAnimationUsingKeyFrames
+    $SquishScale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleXProperty, $script:KfReleaseX)
+    $SquishScale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleYProperty, $script:KfReleaseY)
 
-    # Frame 1 (120ms): Overshoot Stretch Upward
-    $f1X = New-Object System.Windows.Media.Animation.EasingDoubleKeyFrame(0.91, [System.Windows.Media.Animation.KeyTime]::FromTimeSpan([TimeSpan]::FromMilliseconds(120)))
-    $f1X.EasingFunction = $cubicEaseOut
-    $f1Y = New-Object System.Windows.Media.Animation.EasingDoubleKeyFrame(1.13, [System.Windows.Media.Animation.KeyTime]::FromTimeSpan([TimeSpan]::FromMilliseconds(120)))
-    $f1Y.EasingFunction = $cubicEaseOut
-
-    # Frame 2 (240ms): Secondary Squash Bounce
-    $f2X = New-Object System.Windows.Media.Animation.EasingDoubleKeyFrame(1.055, [System.Windows.Media.Animation.KeyTime]::FromTimeSpan([TimeSpan]::FromMilliseconds(240)))
-    $f2X.EasingFunction = $sineEaseInOut
-    $f2Y = New-Object System.Windows.Media.Animation.EasingDoubleKeyFrame(0.955, [System.Windows.Media.Animation.KeyTime]::FromTimeSpan([TimeSpan]::FromMilliseconds(240)))
-    $f2Y.EasingFunction = $sineEaseInOut
-
-    # Frame 3 (360ms): Micro-settle
-    $f3X = New-Object System.Windows.Media.Animation.EasingDoubleKeyFrame(0.986, [System.Windows.Media.Animation.KeyTime]::FromTimeSpan([TimeSpan]::FromMilliseconds(360)))
-    $f3X.EasingFunction = $sineEaseInOut
-    $f3Y = New-Object System.Windows.Media.Animation.EasingDoubleKeyFrame(1.014, [System.Windows.Media.Animation.KeyTime]::FromTimeSpan([TimeSpan]::FromMilliseconds(360)))
-    $f3Y.EasingFunction = $sineEaseInOut
-
-    # Frame 4 (480ms): Complete Rest
-    $f4X = New-Object System.Windows.Media.Animation.EasingDoubleKeyFrame(1.0, [System.Windows.Media.Animation.KeyTime]::FromTimeSpan([TimeSpan]::FromMilliseconds(480)))
-    $f4X.EasingFunction = $quadEaseOut
-    $f4Y = New-Object System.Windows.Media.Animation.EasingDoubleKeyFrame(1.0, [System.Windows.Media.Animation.KeyTime]::FromTimeSpan([TimeSpan]::FromMilliseconds(480)))
-    $f4Y.EasingFunction = $quadEaseOut
-
-    [void]$kfX.KeyFrames.Add($f1X)
-    [void]$kfX.KeyFrames.Add($f2X)
-    [void]$kfX.KeyFrames.Add($f3X)
-    [void]$kfX.KeyFrames.Add($f4X)
-
-    [void]$kfY.KeyFrames.Add($f1Y)
-    [void]$kfY.KeyFrames.Add($f2Y)
-    [void]$kfY.KeyFrames.Add($f3Y)
-    [void]$kfY.KeyFrames.Add($f4Y)
-
-    $SquishScale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleXProperty, $kfX)
-    $SquishScale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleYProperty, $kfY)
-
-    # Fade Heart badge smoothly after 750ms
     if ($HeartBadge) {
-        $fadeAnim = New-Object System.Windows.Media.Animation.DoubleAnimation(0.0, [System.Windows.Duration]::new([TimeSpan]::FromMilliseconds(400)))
-        $fadeAnim.BeginTime = [TimeSpan]::FromMilliseconds(750)
-        $fadeAnim.EasingFunction = $quadEaseOut
-        $HeartBadge.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $fadeAnim)
+        $HeartBadge.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $script:AnimHeartFade)
     }
 
-    # Reset blush image gently after petting session
     $blushResetTimer.Stop()
     $blushResetTimer.Start()
 }
 
 function Start-MascotDragSettleAnimation {
     $state.IsSpringRebounding = $false
-    $animX = New-Object System.Windows.Media.Animation.DoubleAnimation(1.0, [System.Windows.Duration]::new([TimeSpan]::FromMilliseconds(180)))
-    $animX.EasingFunction = $cubicEaseOut
-    $animY = New-Object System.Windows.Media.Animation.DoubleAnimation(1.0, [System.Windows.Duration]::new([TimeSpan]::FromMilliseconds(180)))
-    $animY.EasingFunction = $cubicEaseOut
-
-    $SquishScale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleXProperty, $animX)
-    $SquishScale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleYProperty, $animY)
+    $SquishScale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleXProperty, $script:AnimDragSettle)
+    $SquishScale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleYProperty, $script:AnimDragSettle)
 
     if ($HeartBadge) {
         $HeartBadge.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $null)
         $HeartBadge.Opacity = 0.0
     }
-    if ($normalBitmap) { $CharacterImg.Source = $normalBitmap }
+    Set-MascotBlush $false
 }
 
 $MascotContainer.Add_MouseLeftButtonDown({
     param($sender, $e)
     Play-HakimiSound "press"
-    if ($blushBitmap) { $CharacterImg.Source = $blushBitmap }
+    Set-MascotBlush $true
     Start-MascotPressSquashAnimation
 
     $state.IsDragging = $true
@@ -1829,19 +1872,17 @@ function Rebuild-ContextMenu {
     # Model Selector Submenu
     $miModels = [System.Windows.Controls.MenuItem]::new()
     $miModels.Header = "🤖 切换当前 Gemini / Claude 计费模型"
-    foreach ($mk in $Monitor.Pricing.models.Keys | Sort-Object) {
+    foreach ($mk in $script:PricingModels.Keys | Sort-Object) {
         $mSub = [System.Windows.Controls.MenuItem]::new()
-        $mSub.Header = "$($Monitor.Pricing.models[$mk].display_name) ($mk)"
+        $mSub.Header = "$($script:PricingModels[$mk].display_name) ($mk)"
         $mSub.Tag = $mk
-        $mSub.IsChecked = ($mk -eq $Monitor.ActiveModel)
+        $mSub.IsChecked = ($mk -eq $script:UiData.ActiveModel)
         $mSub.Add_Click({
             param($s, $e)
             $selectedModel = [string]$s.Tag
             $Config.active_model = $selectedModel
             Save-Config
-            $Monitor.SetModel($selectedModel, $Config.active_plan)
-            if (!$Monitor.SyncFromSidecar()) { $Monitor.ScanAllWindows() }
-            Update-UI
+            Invoke-AsyncModelSwitch $selectedModel $Config.active_plan
         })
         $miModels.Items.Add($mSub) | Out-Null
     }
@@ -1859,8 +1900,7 @@ function Rebuild-ContextMenu {
             param($s, $e)
             $Config.active_plan = [string]$s.Tag
             Save-Config
-            $Monitor.SetModel($Monitor.ActiveModel, $Config.active_plan)
-            Update-UI
+            Invoke-AsyncModelSwitch $script:UiData.ActiveModel $Config.active_plan
         })
         $miPlan.Items.Add($pSub) | Out-Null
     }
@@ -2132,13 +2172,120 @@ $animTimer.Add_Tick({
 })
 $animTimer.Start()
 
-# Transcript Poll Timer (1.5s)
+# Background Polling Worker Runspace (All HTTP / WMI / Transcript I/O offloaded off WPF UI thread!)
+$script:BgRunspace = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+$script:BgRunspace.ApartmentState = [System.Threading.ApartmentState]::MTA
+$script:BgRunspace.ThreadOptions = [System.Management.Automation.Runspaces.PSThreadOptions]::ReuseThread
+$script:BgRunspace.Open()
+
+$script:BgPowerShell = [System.Management.Automation.PowerShell]::Create()
+$script:BgPowerShell.Runspace = $script:BgRunspace
+[void]$script:BgPowerShell.AddScript({
+    param($mon, $bg, $agyDataPath)
+
+    function Build-Snap($m) {
+        $mqList = [System.Collections.Generic.List[hashtable]]::new()
+        foreach ($mq in $m.ModelQuotas) {
+            $mqList.Add($mq.Clone())
+        }
+        return @{
+            ActiveModel = [string]$m.ActiveModel
+            ActivePlan = [string]$m.ActivePlan
+            LivePlanName = [string]$m.LivePlanName
+            FiveHour = $m.FiveHour.Clone()
+            Weekly = $m.Weekly.Clone()
+            Today = $m.Today.Clone()
+            RateLimits = $m.RateLimits.Clone()
+            Session = $m.Session.Clone()
+            LastTurn = $m.LastTurn.Clone()
+            ModelQuotas = $mqList
+        }
+    }
+
+    function Send-SidecarConfigPatch($patchHash, $agyRoot) {
+        try {
+            $scPort = 54716
+            $scToken = ""
+            foreach ($candInfo in @(
+                (Join-Path $agyRoot "sidecar_data\gemini-hakimi-widget\hakimi_panel\data\server_info.json"),
+                (Join-Path $agyRoot "sidecar_data\hakimi_panel\data\server_info.json")
+            )) {
+                if (Test-Path $candInfo) {
+                    try {
+                        $sInfo = Get-Content -LiteralPath $candInfo -Raw -Encoding UTF8 | ConvertFrom-Json
+                        if ($null -ne $sInfo.port -and [int]$sInfo.port -gt 0) { $scPort = [int]$sInfo.port }
+                        if ($null -ne $sInfo.token) { $scToken = [string]$sInfo.token }
+                        break
+                    } catch {}
+                }
+            }
+            $req = [System.Net.WebRequest]::CreateHttp("http://127.0.0.1:${scPort}/api/config")
+            $req.Proxy = $null
+            $req.Method = "POST"
+            $req.Timeout = 800
+            $req.ContentType = "application/json"
+            if (![string]::IsNullOrEmpty($scToken)) { $req.Headers.Add("X-Sidecar-Token", $scToken) }
+            $jsonBody = ($patchHash | ConvertTo-Json -Compress)
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes($jsonBody)
+            $req.ContentLength = $bytes.Length
+            $st = $req.GetRequestStream(); $st.Write($bytes, 0, $bytes.Length); $st.Close()
+            $req.GetResponse().Dispose()
+        } catch {}
+    }
+
+    $lastTurns = [int]$mon.Today.Turns
+    while (!$bg.Stop) {
+        try {
+            $pc = $bg.PendingConfig
+            if ($null -ne $pc) {
+                $bg.PendingConfig = $null
+                Send-SidecarConfigPatch $pc $agyDataPath
+                $mon.SetModel([string]$pc.active_model, [string]$pc.active_plan)
+            }
+
+            $mon.PollUpdates()
+
+            $curTurns = [int]$mon.Today.Turns
+            if ($lastTurns -gt 0 -and $curTurns -gt $lastTurns) {
+                $bg.PendingTurn = $mon.LastTurn.Clone()
+            }
+            $lastTurns = $curTurns
+
+            $bg.Snapshot = Build-Snap $mon
+            $bg.Version = [long]$bg.Version + 1L
+        } catch {}
+
+        try {
+            [void]$bg.WakeEvent.WaitOne(1500)
+        } catch {
+            Start-Sleep -Milliseconds 1500
+        }
+    }
+}).AddArgument($Monitor).AddArgument($script:BgSync).AddArgument($Monitor.AgyDataPath)
+$script:BgAsyncHandle = $script:BgPowerShell.BeginInvoke()
+
+# Lightweight UI Snapshot Sync Timer (250ms, 0ms blocking I/O)
 $pollTimer = [System.Windows.Threading.DispatcherTimer]::new()
-$pollTimer.Interval = [TimeSpan]::FromMilliseconds(1500)
+$pollTimer.Interval = [TimeSpan]::FromMilliseconds(250)
 $pollTimer.Add_Tick({
     try {
-        $Monitor.PollUpdates()
-        Update-UI
+        $ver = [long]$script:BgSync.Version
+        if ($ver -ne $script:LastUiVersion) {
+            $script:LastUiVersion = $ver
+            $snap = $script:BgSync.Snapshot
+            if ($null -ne $snap) {
+                $script:UiData = $snap
+                if (![string]::IsNullOrEmpty($snap.ActiveModel) -and $Config.active_model -ne $snap.ActiveModel) {
+                    $Config.active_model = $snap.ActiveModel
+                }
+                Update-UI
+            }
+            $pt = $script:BgSync.PendingTurn
+            if ($null -ne $pt) {
+                $script:BgSync.PendingTurn = $null
+                & $HandleTurnFinished $pt
+            }
+        }
     } catch {}
 })
 $pollTimer.Start()
@@ -2154,6 +2301,18 @@ $window.Add_Closed({
     [HakimiHostFollower]::Stop()
     $animTimer.Stop()
     $pollTimer.Stop()
+    try {
+        $script:BgSync.Stop = $true
+        [void]$script:BgSync.WakeEvent.Set()
+        if ($script:BgPowerShell) {
+            try { $script:BgPowerShell.Stop() } catch {}
+            try { $script:BgPowerShell.Dispose() } catch {}
+        }
+        if ($script:BgRunspace) {
+            try { $script:BgRunspace.Close() } catch {}
+            try { $script:BgRunspace.Dispose() } catch {}
+        }
+    } catch {}
     try { $detailWindow.Close() } catch {}
     $notifyIcon.Visible = $false
     $notifyIcon.Dispose()

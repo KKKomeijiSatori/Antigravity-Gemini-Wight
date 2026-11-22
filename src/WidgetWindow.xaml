@@ -31,7 +31,14 @@
             <Image x:Name="CharacterImg"
                    Width="208" Height="208"
                    Stretch="Uniform"
-                   RenderOptions.BitmapScalingMode="HighQuality"/>
+                   RenderOptions.BitmapScalingMode="Linear"/>
+
+            <Image x:Name="CharacterBlushImg"
+                   Width="208" Height="208"
+                   Stretch="Uniform"
+                   Opacity="0"
+                   IsHitTestVisible="False"
+                   RenderOptions.BitmapScalingMode="Linear"/>
 
             <!-- Floating Heart / Sparkle when petted (Uses Opacity instead of Visibility to prevent WPF layout jump!) -->
             <Border x:Name="HeartBadge" Opacity="0" IsHitTestVisible="False" Canvas.Left="24" Canvas.Top="16"
@@ -75,7 +82,7 @@
                     </LinearGradientBrush>
                 </Border.BorderBrush>
                 <Border.Effect>
-                    <DropShadowEffect Color="#312E81" BlurRadius="18" ShadowDepth="4" Opacity="0.18"/>
+                    <DropShadowEffect Color="#312E81" BlurRadius="16" ShadowDepth="3" Opacity="0.18" RenderingBias="Performance"/>
                 </Border.Effect>
 
                 <!-- Inner Subtle Highlight Border -->

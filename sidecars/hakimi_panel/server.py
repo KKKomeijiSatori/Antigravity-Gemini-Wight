@@ -9,6 +9,7 @@ import os
 import re
 import ssl
 import sys
+import socket
 import threading
 import urllib.request
 import json
@@ -564,7 +565,18 @@ def is_desktop_pet_running():
     return False
 
 
-_LS_CACHE = {"scheme": "", "port": 0, "csrf": "", "last_sync": 0.0, "quotas": {}, "plan_name": ""}
+_LS_CACHE = {
+    "scheme": "",
+    "port": 0,
+    "csrf": "",
+    "last_sync": 0.0,
+    "last_probe_ts": 0.0,
+    "fail_streak": 0,
+    "refreshing": False,
+    "quotas": {},
+    "plan_name": "",
+}
+_LS_LOCK = threading.Lock()
 _SSL_UNVERIFIED = ssl._create_unverified_context()
 _DIRECT_HTTP_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 _DIRECT_HTTPS_OPENER = urllib.request.build_opener(
@@ -595,7 +607,44 @@ def _format_countdown(secs_left):
     return f"{max(1, mins)}m"
 
 
+def _is_loopback_port_open(port, timeout=0.08):
+    if not port or int(port) <= 0:
+        return False
+    try:
+        with socket.create_connection(("127.0.0.1", int(port)), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
+def _parse_env_ls_target():
+    addr = (os.environ.get("ANTIGRAVITY_LS_ADDRESS") or "").strip()
+    csrf = (os.environ.get("ANTIGRAVITY_CSRF_TOKEN") or "").strip()
+    if not addr or not csrf:
+        return None
+    pref_scheme = ""
+    if addr.startswith("https://"):
+        pref_scheme = "https"
+        addr = addr[len("https://"):]
+    elif addr.startswith("http://"):
+        pref_scheme = "http"
+        addr = addr[len("http://"):]
+    addr = addr.split("/", 1)[0]
+    m = re.search(r":(\d+)$", addr)
+    if not m:
+        return None
+    try:
+        port = int(m.group(1))
+    except ValueError:
+        return None
+    if port <= 0:
+        return None
+    return (0, port, csrf, pref_scheme)
+
+
 def _probe_ls_get_user_status(port, csrf, preferred_scheme=""):
+    if not _is_loopback_port_open(port, timeout=0.08):
+        return None, ""
     schemes = [preferred_scheme] if preferred_scheme in ("https", "http") else []
     for s in ("https", "http"):
         if s not in schemes:
@@ -614,7 +663,7 @@ def _probe_ls_get_user_status(port, csrf, preferred_scheme=""):
         )
         try:
             opener = _DIRECT_HTTPS_OPENER if scheme == "https" else _DIRECT_HTTP_OPENER
-            with opener.open(req, timeout=0.6) as resp:
+            with opener.open(req, timeout=0.4) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
             configs = data.get("userStatus", {}).get("cascadeModelConfigData", {}).get("clientModelConfigs", [])
             if configs:
@@ -702,22 +751,30 @@ def _parse_model_quota_entry(cfg_item, now_utc):
     }
 
 
-def fetch_live_antigravity_quotas():
-    now = time.time()
-    if now - _LS_CACHE["last_sync"] < 3.0 and _LS_CACHE["quotas"]:
-        return _LS_CACHE["quotas"]
-    _LS_CACHE["last_sync"] = now
-
+def _refresh_live_quotas_sync():
     bridge_path = os.path.join(PLUGIN_DIR, "config", "ls_bridge.json")
     initial_targets = []
-    if _LS_CACHE["port"] > 0 and _LS_CACHE["csrf"]:
-        initial_targets.append((0, _LS_CACHE["port"], _LS_CACHE["csrf"], _LS_CACHE["scheme"]))
+
+    env_target = _parse_env_ls_target()
+    if env_target:
+        initial_targets.append(env_target)
+
+    with _LS_LOCK:
+        c_port = _LS_CACHE["port"]
+        c_csrf = _LS_CACHE["csrf"]
+        c_scheme = _LS_CACHE["scheme"]
+    if c_port > 0 and c_csrf:
+        if not any(x[1] == c_port and x[2] == c_csrf for x in initial_targets):
+            initial_targets.append((0, c_port, c_csrf, c_scheme))
+
     if os.path.exists(bridge_path):
         b = load_json(bridge_path, {})
         if b.get("port") and b.get("csrf"):
-            b_item = (int(b.get("pid") or 0), int(b["port"]), str(b["csrf"]), str(b.get("scheme") or ""))
-            if not any(x[1] == b_item[1] and x[2] == b_item[2] for x in initial_targets):
-                initial_targets.append(b_item)
+            b_pid = int(b.get("pid") or 0)
+            if b_pid <= 0 or _is_pid_alive(b_pid):
+                b_item = (b_pid, int(b["port"]), str(b["csrf"]), str(b.get("scheme") or ""))
+                if not any(x[1] == b_item[1] and x[2] == b_item[2] for x in initial_targets):
+                    initial_targets.append(b_item)
 
     data = None
     hit_pid, hit_port, hit_csrf, hit_scheme = 0, 0, "", ""
@@ -726,12 +783,15 @@ def fetch_live_antigravity_quotas():
         data, hit_scheme = _probe_ls_get_user_status(port, csrf, pref_scheme)
         if data:
             hit_pid, hit_port, hit_csrf = pid, port, csrf
+            if env_target and port == env_target[1]:
+                save_json(bridge_path, {"scheme": hit_scheme, "port": hit_port, "csrf": hit_csrf, "pid": hit_pid})
             break
 
     if not data:
-        _LS_CACHE["port"] = 0
-        _LS_CACHE["csrf"] = ""
-        _LS_CACHE["scheme"] = ""
+        with _LS_LOCK:
+            _LS_CACHE["port"] = 0
+            _LS_CACHE["csrf"] = ""
+            _LS_CACHE["scheme"] = ""
         for pid, port, csrf in _discover_ls_candidates():
             data, hit_scheme = _probe_ls_get_user_status(port, csrf)
             if data:
@@ -740,17 +800,14 @@ def fetch_live_antigravity_quotas():
                 break
 
     if not data:
-        return _LS_CACHE["quotas"]
-
-    _LS_CACHE["scheme"] = hit_scheme
-    _LS_CACHE["port"] = hit_port
-    _LS_CACHE["csrf"] = hit_csrf
+        with _LS_LOCK:
+            _LS_CACHE["fail_streak"] = min(10, int(_LS_CACHE.get("fail_streak", 0)) + 1)
+            _LS_CACHE["last_probe_ts"] = time.time()
+            _LS_CACHE["refreshing"] = False
+            return dict(_LS_CACHE["quotas"])
 
     user_status = data.get("userStatus", {})
     plan_info = user_status.get("planStatus", {}).get("planInfo", {})
-    if plan_info.get("planName"):
-        _LS_CACHE["plan_name"] = str(plan_info["planName"])
-
     configs = user_status.get("cascadeModelConfigData", {}).get("clientModelConfigs", [])
     quotas = {}
     now_utc = datetime.now(timezone.utc)
@@ -763,7 +820,6 @@ def fetch_live_antigravity_quotas():
         if not mkey:
             continue
         parsed = _parse_model_quota_entry(c, now_utc)
-        # Prefer enabled variant or '-high' if multiple tiers exist for the same canonical model
         if mkey not in quotas or (not parsed["disabled"] and ("high" in mid.lower() or quotas[mkey]["disabled"])):
             quotas[mkey] = parsed
 
@@ -773,9 +829,54 @@ def fetch_live_antigravity_quotas():
         elif b in quotas and a not in quotas and not quotas[b]["disabled"]:
             quotas[a] = dict(quotas[b])
 
-    if quotas:
-        _LS_CACHE["quotas"] = quotas
-    return _LS_CACHE["quotas"]
+    with _LS_LOCK:
+        _LS_CACHE["scheme"] = hit_scheme
+        _LS_CACHE["port"] = hit_port
+        _LS_CACHE["csrf"] = hit_csrf
+        if plan_info.get("planName"):
+            _LS_CACHE["plan_name"] = str(plan_info["planName"])
+        if quotas:
+            _LS_CACHE["quotas"] = quotas
+            _LS_CACHE["last_sync"] = time.time()
+            _LS_CACHE["fail_streak"] = 0
+        else:
+            _LS_CACHE["fail_streak"] = min(10, int(_LS_CACHE.get("fail_streak", 0)) + 1)
+        _LS_CACHE["last_probe_ts"] = time.time()
+        _LS_CACHE["refreshing"] = False
+        return dict(_LS_CACHE["quotas"])
+
+
+def _bg_refresh_quotas_worker():
+    try:
+        _refresh_live_quotas_sync()
+    except Exception:
+        with _LS_LOCK:
+            _LS_CACHE["last_probe_ts"] = time.time()
+            _LS_CACHE["refreshing"] = False
+
+
+def fetch_live_antigravity_quotas():
+    now = time.time()
+    with _LS_LOCK:
+        has_quotas = bool(_LS_CACHE["quotas"])
+        if has_quotas and (now - _LS_CACHE["last_sync"] < 8.0):
+            return dict(_LS_CACHE["quotas"])
+        fail_streak = int(_LS_CACHE.get("fail_streak", 0))
+        cooldown = 8.0 if has_quotas else min(60.0, max(15.0, 15.0 * max(1, fail_streak)))
+        if (now - _LS_CACHE.get("last_probe_ts", 0.0)) < cooldown:
+            return dict(_LS_CACHE["quotas"])
+        if _LS_CACHE.get("refreshing"):
+            return dict(_LS_CACHE["quotas"])
+        # On the very first probe when ANTIGRAVITY_LS_ADDRESS env is present, do one quick (<400ms) sync read;
+        # otherwise refresh in background so /api/stats never blocks the desktop pet!
+        first_env_try = (not has_quotas and fail_streak == 0 and _parse_env_ls_target() is not None)
+        _LS_CACHE["last_probe_ts"] = now
+        if not first_env_try:
+            _LS_CACHE["refreshing"] = True
+            threading.Thread(target=_bg_refresh_quotas_worker, daemon=True).start()
+            return dict(_LS_CACHE["quotas"])
+
+    return _refresh_live_quotas_sync()
 
 
 class _STARTUPINFOW(ctypes.Structure):
@@ -883,6 +984,7 @@ def _is_antigravity_process(pid):
 
 
 def has_antigravity_window():
+    hdesk = None
     try:
         hdesk = ctypes.windll.user32.OpenDesktopW("Default", 0, False, 0x10000000)
         if not hdesk:
@@ -898,44 +1000,49 @@ def has_antigravity_window():
                 if not ctypes.windll.user32.IsWindow(hwnd):
                     return True
 
-                pid = ctypes.wintypes.DWORD()
-                ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-                if pid.value <= 0 or not _is_antigravity_process(pid.value):
-                    return True
-
                 cls_buf = ctypes.create_unicode_buffer(128)
                 ctypes.windll.user32.GetClassNameW(hwnd, cls_buf, 128)
                 if cls_buf.value != "Chrome_WidgetWin_1":
                     return True
 
                 length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
-                if length > 0:
-                    buf = ctypes.create_unicode_buffer(length + 1)
-                    ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
-                    title = buf.value
-                    if "Gemini Hakimi" in title:
-                        return True
+                if length <= 0:
+                    return True
 
-                    rect = (ctypes.c_int * 4)()
-                    ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
-                    w = rect[2] - rect[0]
-                    h = rect[3] - rect[1]
-                    is_vis = bool(ctypes.windll.user32.IsWindowVisible(hwnd))
-                    is_ico = bool(ctypes.windll.user32.IsIconic(hwnd))
+                buf = ctypes.create_unicode_buffer(min(length + 1, 256))
+                ctypes.windll.user32.GetWindowTextW(hwnd, buf, len(buf))
+                title = buf.value
+                if "Gemini Hakimi" in title:
+                    return True
 
-                    # Active window on screen or minimized in taskbar
-                    if (is_vis and w >= 400 and h >= 300) or is_ico or rect[0] <= -10000:
-                        found[0] = True
-                        return False
+                rect = (ctypes.c_int * 4)()
+                ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                w = rect[2] - rect[0]
+                h = rect[3] - rect[1]
+                is_vis = bool(ctypes.windll.user32.IsWindowVisible(hwnd))
+                is_ico = bool(ctypes.windll.user32.IsIconic(hwnd))
+                if not ((is_vis and w >= 400 and h >= 300) or is_ico or rect[0] <= -10000):
+                    return True
+
+                pid = ctypes.wintypes.DWORD()
+                ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                if pid.value > 0 and _is_antigravity_process(pid.value):
+                    found[0] = True
+                    return False
             except Exception:
                 pass
             return True
 
         ctypes.windll.user32.EnumDesktopWindows(hdesk, WNDENUMPROC(cb), 0)
-        ctypes.windll.user32.CloseDesktop(hdesk)
         return found[0]
     except Exception:
         return False
+    finally:
+        if hdesk:
+            try:
+                ctypes.windll.user32.CloseDesktop(hdesk)
+            except Exception:
+                pass
 
 
 def _companion_watcher_loop():
@@ -1634,6 +1741,11 @@ def write_server_info(port):
             pass
 
 
+class HakimiHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
 def main():
     port_env = os.environ.get("ANTIGRAVITY_SIDECAR_WEB_PORT") or os.environ.get("PORT")
     port = int(port_env) if port_env else 39282
@@ -1645,11 +1757,11 @@ def main():
     # Start companion auto-revive watcher loop
     threading.Thread(target=_companion_watcher_loop, daemon=True).start()
 
-    server = ThreadingHTTPServer(("127.0.0.1", port), HakimiSidecarHandler)
+    server = HakimiHTTPServer(("127.0.0.1", port), HakimiSidecarHandler)
     write_server_info(port)
     if port != 54716:
         try:
-            compat_srv = ThreadingHTTPServer(("127.0.0.1", 54716), HakimiSidecarHandler)
+            compat_srv = HakimiHTTPServer(("127.0.0.1", 54716), HakimiSidecarHandler)
             threading.Thread(target=compat_srv.serve_forever, daemon=True).start()
             print("[HakimiSidecar] Also bound compatibility port 54716", flush=True)
         except Exception:

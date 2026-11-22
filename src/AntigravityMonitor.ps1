@@ -22,9 +22,11 @@ class AntigravityMonitor {
     [string]$CurrentTranscriptPath = ""
     [long]$LastFileOffset = 0
     [datetime]$LastQuotaSync = [datetime]::MinValue
+    [datetime]$LastQuotaAttempt = [datetime]::MinValue
     [hashtable]$CachedLiveQuotas = $null
 
     [hashtable]$ConvModelCache = @{}
+    [hashtable]$TranscriptFileCache = @{}
 
     [hashtable]$LastTurn = @{
         Model = ""
@@ -130,8 +132,10 @@ class AntigravityMonitor {
             $this.LastPbtxtModel = $detected
         }
         $this.UpdateModelLimits()
-        $this.ScanAllWindows()
-        $this.CheckActiveConversation()
+        if (!$this.SyncFromSidecar()) {
+            $this.ScanAllWindows()
+            $this.CheckActiveConversation()
+        }
     }
 
     [void]LoadPricing([string]$pricingPath) {
@@ -292,7 +296,25 @@ class AntigravityMonitor {
         return $this.ActiveModel
     }
 
+    [bool]TestLoopbackPort([int]$port, [int]$timeoutMs) {
+        if ($port -le 0) { return $false }
+        $tcp = $null
+        try {
+            $tcp = [System.Net.Sockets.TcpClient]::new()
+            $iar = $tcp.BeginConnect("127.0.0.1", $port, $null, $null)
+            $ok = $iar.AsyncWaitHandle.WaitOne($timeoutMs, $false)
+            if (!$ok) { return $false }
+            $tcp.EndConnect($iar)
+            return $true
+        } catch {
+            return $false
+        } finally {
+            if ($null -ne $tcp) { try { $tcp.Close() } catch {} }
+        }
+    }
+
     [hashtable]CallLanguageServerGetUserStatus([int]$port, [string]$csrf, [string]$preferredScheme) {
+        if (!$this.TestLoopbackPort($port, 80)) { return $null }
         $schemes = @()
         if ($preferredScheme -in @("https", "http")) { $schemes += $preferredScheme }
         foreach ($s in @("https", "http")) {
@@ -311,8 +333,8 @@ class AntigravityMonitor {
                     $req.Proxy = $null
                     $req.Method = "POST"
                     $req.ContentType = "application/json"
-                    $req.Timeout = 1000
-                    $req.ReadWriteTimeout = 1000
+                    $req.Timeout = 500
+                    $req.ReadWriteTimeout = 500
                     $req.Headers.Add("Connect-Protocol-Version", "1")
                     $req.Headers.Add("x-codeium-csrf-token", $csrf)
                     $bytes = [System.Text.Encoding]::UTF8.GetBytes("{}")
@@ -344,11 +366,16 @@ class AntigravityMonitor {
         if ($null -ne $this.CachedLiveQuotas -and ($nowUtc - $this.LastQuotaSync).TotalSeconds -lt 10) {
             return $this.CachedLiveQuotas
         }
+        if ($null -eq $this.CachedLiveQuotas -and ($nowUtc - $this.LastQuotaAttempt).TotalSeconds -lt 30) {
+            return $null
+        }
+        $this.LastQuotaAttempt = $nowUtc
 
         $bridgePath = Join-Path $this.ConfigDir "ls_bridge.json"
         $port = 0
         $csrf = ""
         $scheme = ""
+        $bridgePid = 0
 
         if (Test-Path $bridgePath) {
             try {
@@ -357,8 +384,21 @@ class AntigravityMonitor {
                     $port = [int]$b.port
                     $csrf = [string]$b.csrf
                     if ($null -ne $b.scheme) { $scheme = [string]$b.scheme }
+                    if ($null -ne $b.pid) { $bridgePid = [int]$b.pid }
                 }
             } catch {}
+        }
+
+        if ($bridgePid -gt 0) {
+            $procAlive = $false
+            try {
+                $bp = [System.Diagnostics.Process]::GetProcessById($bridgePid)
+                $procAlive = !$bp.HasExited
+                $bp.Dispose()
+            } catch {}
+            if (!$procAlive) {
+                $port = 0
+            }
         }
 
         $rpcHit = $null
@@ -395,6 +435,7 @@ class AntigravityMonitor {
         }
 
         if ($null -eq $rpcHit -or $null -eq $rpcHit.Data -or $null -eq $rpcHit.Data.userStatus) {
+            $this.LastQuotaSync = $nowUtc
             return $this.CachedLiveQuotas
         }
 
@@ -996,12 +1037,14 @@ class AntigravityMonitor {
             }
         }
 
+        $rxInp = [regex]'"input_tokens":\s*(\d+)'
+        $rxCache = [regex]'"cache_read_tokens":\s*(\d+)'
+        $rxOut = [regex]'"output_tokens":\s*(\d+)'
+        $rxCreated = [regex]'"created_at":\s*"([^"]+)"'
+
         foreach ($f in $files) {
             try {
                 if ($f.LastWriteTimeUtc -lt $cutoff7d) { continue }
-                $lines = Get-Content -LiteralPath $f.FullName -Encoding UTF8 -ErrorAction SilentlyContinue
-                if (!$lines) { continue }
-
                 $cid = $f.Directory.Parent.Parent.Name
                 $convModel = $this.GetConversationModel($cid)
                 $pname = if ($this.Pricing -and $this.Pricing.models.ContainsKey($convModel)) { [string]$this.Pricing.models[$convModel].quota_pool } else { "flash_hydrogen" }
@@ -1009,25 +1052,60 @@ class AntigravityMonitor {
                     $pname = "flash_hydrogen"
                 }
 
-                foreach ($line in $lines) {
-                    if ([string]::IsNullOrWhiteSpace($line) -or $line.IndexOf('"input_tokens"') -lt 0) { continue }
-                    $step = $line | ConvertFrom-Json
-                    if ($null -eq $step.input_tokens) { continue }
-
-                    $stUtc = $nowUtc
-                    if ($null -ne $step.created_at) {
-                        [datetime]::TryParse($step.created_at, [ref]$stUtc) | Out-Null
-                        $stUtc = $stUtc.ToUniversalTime()
+                $fKey = $f.FullName
+                $fSig = "$($f.Length)|$($f.LastWriteTimeUtc.Ticks)"
+                $parsedSteps = $null
+                if ($this.TranscriptFileCache.ContainsKey($fKey)) {
+                    $ce = $this.TranscriptFileCache[$fKey]
+                    if ($ce.Sig -eq $fSig) {
+                        $parsedSteps = $ce.Steps
                     }
+                }
+                if ($null -eq $parsedSteps) {
+                    $parsedSteps = [System.Collections.Generic.List[hashtable]]::new()
+                    $fs = [System.IO.FileStream]::new($f.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+                    $sr = [System.IO.StreamReader]::new($fs, [System.Text.Encoding]::UTF8)
+                    try {
+                        while (!$sr.EndOfStream) {
+                            $line = $sr.ReadLine()
+                            if ([string]::IsNullOrWhiteSpace($line) -or $line.IndexOf('"input_tokens"') -lt 0) { continue }
+                            $mInp = $rxInp.Match($line)
+                            if (!$mInp.Success) { continue }
+                            $sInp = [long]$mInp.Groups[1].Value
+                            $mCache = $rxCache.Match($line)
+                            $sCache = if ($mCache.Success) { [long]$mCache.Groups[1].Value } else { 0L }
+                            $mOut = $rxOut.Match($line)
+                            $sOut = if ($mOut.Success) { [long]$mOut.Groups[1].Value } else { 0L }
+                            $stUtc = $nowUtc
+                            $mCrt = $rxCreated.Match($line)
+                            if ($mCrt.Success) {
+                                [datetime]::TryParse($mCrt.Groups[1].Value, [ref]$stUtc) | Out-Null
+                                $stUtc = $stUtc.ToUniversalTime()
+                            }
+                            $parsedSteps.Add(@{
+                                StUtc = $stUtc
+                                DateStr = $stUtc.ToString("yyyy-MM-dd")
+                                Inp = $sInp
+                                Cache = $sCache
+                                Out = $sOut
+                                Tot = ($sInp + $sCache + $sOut)
+                            })
+                        }
+                    } finally {
+                        $sr.Dispose()
+                        $fs.Dispose()
+                    }
+                    $this.TranscriptFileCache[$fKey] = @{ Sig = $fSig; Steps = $parsedSteps }
+                }
 
-                    $sInp = [long]$step.input_tokens
-                    $sCache = 0L
-                    if ($null -ne $step.cache_read_tokens) { $sCache = [long]$step.cache_read_tokens }
-                    $sOut = 0L
-                    if ($null -ne $step.output_tokens) { $sOut = [long]$step.output_tokens }
-                    $sTot = $sInp + $sCache + $sOut
+                foreach ($st in $parsedSteps) {
+                    $stUtc = $st.StUtc
+                    $sInp = $st.Inp
+                    $sCache = $st.Cache
+                    $sOut = $st.Out
+                    $sTot = $st.Tot
 
-                    if ($stUtc.ToString("yyyy-MM-dd") -eq $todayStr) {
+                    if ($st.DateStr -eq $todayStr) {
                         $tTurns += 1
                         $tInp += $sInp
                         $tCache += $sCache

@@ -208,4 +208,25 @@
 - **多端 UI 与下拉菜单动态刷新**：
   - [`sidecars/hakimi_panel/ui.html`](file:///e:/Antigravity/Gemini-Hakimi-Widget/sidecars/hakimi_panel/ui.html) 的 `#modelSelect` 由仅首轮填充改为当后端模型数量变更时自动重建下拉列表，并同 [`src/HakimiWidget.ps1`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/HakimiWidget.ps1) 补充 `neon` 配色徽标。
 
+---
+
+### 16. 桌宠点击卡顿与 Antigravity 2.34.0 Sidecar 超时连锁阻塞彻底根治 (v3.3.1)
+- **核心根因定位**：
+  1. **Antigravity 2.34.0 `language_server.exe` 移除 CLI `--csrf_token` 导致 Sidecar 每次轮询阻塞 `1.6s–2.6s`**：
+     - 新版 `language_server.exe` 改用 `--host_bridge_url` 与标准输入鉴权，不再于命令行暴露 `--csrf_token`；而 [`sidecars/hakimi_panel/server.py`](file:///e:/Antigravity/Gemini-Hakimi-Widget/sidecars/hakimi_panel/server.py) 中 `_LS_CACHE` 仅在 `quotas` 非空时命中缓存，且旧 `config/ls_bridge.json` 指向已退出的陈旧端口/PID，导致每次 `/api/stats` 请求均耗时 `1.6s+`（反复 HTTPS+HTTP 端口超时并拉起 `powershell.exe` 探测），超出 [`src/AntigravityMonitor.ps1`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/AntigravityMonitor.ps1) `1500ms` HTTP 超时限制。
+  2. **桌宠 WPF UI 线程同步轮询网络与 `42.77 MB` 日志全量重扫（单次冻结 `~6 秒`）**：
+     - [`src/HakimiWidget.ps1`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/HakimiWidget.ps1) 原在 UI 线程 `$pollTimer` 中直接调用 `$Monitor.PollUpdates()`：一旦 Sidecar 超时失败，随即在 UI 线程同步回退执行 `ScanAllWindows()`，逐行 `Get-Content` + `ConvertFrom-Json` 解析近 7 天共 `42.77 MB`（41 份）`transcript.jsonl`，同时在 [`src/AntigravityMonitor.ps1`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/AntigravityMonitor.ps1) 内再度触发 `2s+` 死端口扫描，导致主线程周期性冻结与点击响应严重卡顿。
+  3. **桌面分层窗口点击重绘与位图重采样开销**：
+     - 原点击摸头通过替换 `CharacterImg.Source`（`610x610` `HighQuality` 缩放）并动态创建未冻结的 `DoubleAnimation` 触发 WPF 分层透明窗口重排与高阶重采样，外加 `server.py` 的 `has_antigravity_window()` 先对所有桌面窗口调用 `OpenProcess` 再筛选类名造成高句柄占用。
+- **修复与架构升级**：
+  - **Sidecar 极速非阻塞化（[`sidecars/hakimi_panel/server.py`](file:///e:/Antigravity/Gemini-Hakimi-Widget/sidecars/hakimi_panel/server.py)）**：
+    - 优先读取 Antigravity 官方注入的 Sidecar 环境变量 `ANTIGRAVITY_LS_ADDRESS` 与 `ANTIGRAVITY_CSRF_TOKEN`。
+    - 引入 `80ms` 本地回环 TCP 预检（`_is_loopback_port_open`）、陈旧 PID 过滤、`15s–60s` 失败指数退避缓存及后台线程刷新，实测 `/api/stats` 响应由超时 `>3000ms` 降至 **1ms（缓存命中）/ 91ms（首次请求）**。
+    - `has_antigravity_window()` 改为先过滤 `Chrome_WidgetWin_1` 类名/标题/尺寸再调用 `_is_antigravity_process` 并用 `try...finally` 保证 `CloseDesktop`，同时为 `HakimiHTTPServer` 启用 `daemon_threads = True`。
+  - **UI 线程与数据轮询彻底解耦（[`src/HakimiWidget.ps1`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/HakimiWidget.ps1) & [`src/AntigravityMonitor.ps1`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/AntigravityMonitor.ps1)）**：
+    - 将 `$Monitor.PollUpdates()` 与 `POST /api/config` 模型切换全部迁入独立 MTA 后台 `Runspace`（通过线程安全 `$script:BgSync` 原子快照通知 UI）；WPF UI 线程仅每 `250ms` 比对版本号做 `0ms I/O` 刷新，点击、拖拽与摸头弹跳永不被网络或磁盘 I/O 阻塞。
+    - 为 `AntigravityMonitor` 增加 `TestLoopbackPort` (`80ms`)、失败退避及按文件 `Length + LastWriteTimeUtc` 缓存的 `StreamReader` + 正则步级提取（`ScanAllWindows` 从 `5286ms` 降至 `513ms`）。
+  - **零布局重排点击动效（[`src/WidgetWindow.xaml`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/WidgetWindow.xaml) & [`src/HakimiWidget.ps1`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/HakimiWidget.ps1)）**：
+    - 位图解码缩放为 `DecodePixelWidth = 312` + `BitmapScalingMode="Linear"`，叠加独立 `CharacterBlushImg` 图层以 `Opacity` 切换脸红状态，预冻结所有缓动与 Q 弹关键帧动画对象，并为阴影添加 `RenderingBias="Performance"`。
+
 
