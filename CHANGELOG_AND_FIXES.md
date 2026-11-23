@@ -229,4 +229,20 @@
   - **零布局重排点击动效（[`src/WidgetWindow.xaml`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/WidgetWindow.xaml) & [`src/HakimiWidget.ps1`](file:///e:/Antigravity/Gemini-Hakimi-Widget/src/HakimiWidget.ps1)）**：
     - 位图解码缩放为 `DecodePixelWidth = 312` + `BitmapScalingMode="Linear"`，叠加独立 `CharacterBlushImg` 图层以 `Opacity` 切换脸红状态，预冻结所有缓动与 Q 弹关键帧动画对象，并为阴影添加 `RenderingBias="Performance"`。
 
+---
+
+### 17. Gemini 全家桶额度池合并、4 Carbon 全量开放与新 Orchestrator 映射升级 (v3.4)
+- **实时 `GetUserStatus` 验证结论**：
+  - 经实时查询 `language_server` `GetUserStatus` 与实际扣费验证，**Gemini 家族全部 5 个模型已正式合并为同一 `5h` 共享配额池 (`Gemini 共享池`)**：`Gemini 4 Neon`、`Gemini 4 Carbon`、`Gemini 4 Hydrogen`、`Gemini 4 Argon`（原多日独立池已并入 5h 池，并标记 11 月 30 日下线）与 `Gemini 3.8 Flash` 同涨同落（实测使用 Carbon 后 5 者同步降至 `83%`，重置时间一致）。
+  - **`Gemini 4 Carbon` 已向 Pro 订阅开放**：取消了硬编码 `disabled = True` 与“需 Ultra”锁定，新增识别 `MODEL_PLACEHOLDER_M427` (High) / `M437` (Medium) / `M438` (Low) 与 `Orchestrator (Carbon)` (`MODEL_PLACEHOLDER_M667` / `gemini-pro-orchestrator`)。
+  - **Claude 家族独立**：`Claude Opus 5.5` 与 `Claude Sonnet 5.5` 保持在独立 `Claude 独立池`（5h 周期与 Gemini 池各自独立计数与重置）。
+- **核心改动**：
+  - **双池统一模型配置（[`src/Pricing.json`](file:///e:/Antigravity/03_哈基米记账插件_2a7e3170/Gemini-Hakimi-Widget/src/Pricing.json)、[`sidecars/hakimi_panel/server.py`](file:///e:/Antigravity/03_哈基米记账插件_2a7e3170/Gemini-Hakimi-Widget/sidecars/hakimi_panel/server.py)、[`src/AntigravityMonitor.ps1`](file:///e:/Antigravity/03_哈基米记账插件_2a7e3170/Gemini-Hakimi-Widget/src/AntigravityMonitor.ps1)）**：
+    - 全部 5 个 Gemini 模型统一归入 `quota_pool: "gemini"`（`Gemini 共享池`），并将 `_SHARED_POOL_PARTNERS` 与 `$pair` 同步覆盖全部 Gemini 兄弟模型；`featured_models` / `$realModels` 将 `gemini-4-carbon` 提升至前排正常展示。
+    - 重排 `_MODEL_MATCH_RULES` 与 `MapRawModelKey` 优先级：`gemini-4-neon`（`M537` / `gemini-pro-orchestrator-neon`）与 `gemini-4-argon`（`M681` / `gemini-pro-orchestrator-argon` / `M668` / `gemini-pro-orchestrator-g1-pro`）优先匹配，随后将通用 `gemini-pro-orchestrator` / `M667` / `M427` / `M437` / `M438` 准确映射至 `gemini-4-carbon`。
+  - **面板与桌宠双池对照 UI（[`sidecars/hakimi_panel/ui.html`](file:///e:/Antigravity/03_哈基米记账插件_2a7e3170/Gemini-Hakimi-Widget/sidecars/hakimi_panel/ui.html)、[`src/WidgetWindow.xaml`](file:///e:/Antigravity/03_哈基米记账插件_2a7e3170/Gemini-Hakimi-Widget/src/WidgetWindow.xaml)、[`src/HakimiWidget.ps1`](file:///e:/Antigravity/03_哈基米记账插件_2a7e3170/Gemini-Hakimi-Widget/src/HakimiWidget.ps1)）**：
+    - 桌宠头顶气泡双行额度对比升级为 **`Gemini 池` vs `Claude 池`**（调整左侧标签列宽至 `62px`、进度条宽度 `108px` 防裁切，并在 `server.py` 与 `AntigravityMonitor.ps1` 同步输出 `row_label` / `short_label`）。
+    - Sidecar 卡片标题更新为 `Gemini 共享池 & Claude 独立池`，新增 `gemini` 翡翠绿胶囊样式。
+
+
 

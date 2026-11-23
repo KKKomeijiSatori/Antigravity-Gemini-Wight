@@ -100,9 +100,9 @@ _LAST_STEP_MODEL_SIG = None
 
 _MODEL_MATCH_RULES = (
     ("gemini-4-neon", ("MODEL_PLACEHOLDER_M532", "MODEL_PLACEHOLDER_M533", "MODEL_PLACEHOLDER_M534", "MODEL_PLACEHOLDER_M535", "MODEL_PLACEHOLDER_M537", "gemini-pro-orchestrator-neon", "gemini-4-neon", "neon")),
+    ("gemini-4-argon", ("MODEL_PLACEHOLDER_M417", "MODEL_PLACEHOLDER_M418", "MODEL_PLACEHOLDER_M419", "MODEL_PLACEHOLDER_M681", "MODEL_PLACEHOLDER_M668", "gemini-pro-orchestrator-argon", "gemini-pro-orchestrator-g1-pro", "gemini-4-argon", "argon")),
+    ("gemini-4-carbon", ("MODEL_PLACEHOLDER_M427", "MODEL_PLACEHOLDER_M437", "MODEL_PLACEHOLDER_M438", "MODEL_PLACEHOLDER_M667", "MODEL_PLACEHOLDER_M670", "gemini-pro-orchestrator", "orchestrator", "gemini-4-carbon", "carbon")),
     ("gemini-4-hydrogen", ("MODEL_PLACEHOLDER_M525", "MODEL_PLACEHOLDER_M526", "MODEL_PLACEHOLDER_M527", "MODEL_PLACEHOLDER_M528", "MODEL_PLACEHOLDER_M669", "gemini-flash-worker-agy", "gemini-flash-worker", "flash-worker", "gemini-4-hydrogen", "hydrogen")),
-    ("gemini-4-carbon", ("MODEL_PLACEHOLDER_M670", "gemini-4-carbon", "carbon")),
-    ("gemini-4-argon", ("MODEL_PLACEHOLDER_M417", "MODEL_PLACEHOLDER_M418", "MODEL_PLACEHOLDER_M419", "MODEL_PLACEHOLDER_M668", "gemini-pro-orchestrator-g1-pro", "gemini-pro-orchestrator", "orchestrator", "gemini-4-argon", "argon")),
     ("claude-opus-5-5", ("MODEL_PLACEHOLDER_M400", "MODEL_PLACEHOLDER_M401", "MODEL_PLACEHOLDER_M402", "MODEL_PLACEHOLDER_M26", "claude-opus", "opus")),
     ("claude-sonnet-5-5", ("MODEL_PLACEHOLDER_M403", "MODEL_PLACEHOLDER_M404", "MODEL_PLACEHOLDER_M405", "claude-sonnet", "sonnet")),
     ("gemini-3.8-flash", ("MODEL_PLACEHOLDER_M318", "MODEL_PLACEHOLDER_M319", "MODEL_PLACEHOLDER_M320", "MODEL_PLACEHOLDER_M322", "gemini-3.8-flash-tiered", "gemini-3.8-flash-n", "gemini-3.8-flash", "flash")),
@@ -324,8 +324,18 @@ def get_pricing():
                 "short_name": "4 Neon",
                 "vendor": "Gemini",
                 "badge": "NEW",
-                "quota_pool": "flash_hydrogen",
-                "pool_label": "Neon/H/F 共享池",
+                "quota_pool": "gemini",
+                "pool_label": "Gemini 共享池",
+                "context_window": 1048576,
+                "tiers": [{"hit": 0.15, "miss": 3.0, "out": 15.0}]
+            },
+            "gemini-4-carbon": {
+                "display_name": "Gemini 4 Carbon",
+                "short_name": "4 Carbon",
+                "vendor": "Gemini",
+                "badge": "NEW",
+                "quota_pool": "gemini",
+                "pool_label": "Gemini 共享池",
                 "context_window": 1048576,
                 "tiers": [{"hit": 0.15, "miss": 3.0, "out": 15.0}]
             },
@@ -334,18 +344,8 @@ def get_pricing():
                 "short_name": "4 Hydrogen",
                 "vendor": "Gemini",
                 "badge": "NEW",
-                "quota_pool": "flash_hydrogen",
-                "pool_label": "Neon/H/F 共享池",
-                "context_window": 1048576,
-                "tiers": [{"hit": 0.075, "miss": 0.75, "out": 3.75}]
-            },
-            "gemini-3.8-flash": {
-                "display_name": "Gemini 3.8 Flash",
-                "short_name": "3.8 Flash",
-                "vendor": "Gemini",
-                "badge": "FLASH",
-                "quota_pool": "flash_hydrogen",
-                "pool_label": "Neon/H/F 共享池",
+                "quota_pool": "gemini",
+                "pool_label": "Gemini 共享池",
                 "context_window": 1048576,
                 "tiers": [{"hit": 0.075, "miss": 0.75, "out": 3.75}]
             },
@@ -353,11 +353,21 @@ def get_pricing():
                 "display_name": "Gemini 4 Argon",
                 "short_name": "4 Argon",
                 "vendor": "Gemini",
-                "badge": "FLAGSHIP",
-                "quota_pool": "argon",
-                "pool_label": "Argon 独立池",
+                "badge": "LEGACY",
+                "quota_pool": "gemini",
+                "pool_label": "Gemini 共享池",
                 "context_window": 1048576,
                 "tiers": [{"hit": 0.1, "miss": 2.0, "out": 10.0}]
+            },
+            "gemini-3.8-flash": {
+                "display_name": "Gemini 3.8 Flash",
+                "short_name": "3.8 Flash",
+                "vendor": "Gemini",
+                "badge": "LEGACY",
+                "quota_pool": "gemini",
+                "pool_label": "Gemini 共享池",
+                "context_window": 1048576,
+                "tiers": [{"hit": 0.075, "miss": 0.75, "out": 3.75}]
             },
             "claude-opus-5-5": {
                 "display_name": "Claude Opus 5.5",
@@ -378,16 +388,6 @@ def get_pricing():
                 "pool_label": "Claude 独立池",
                 "context_window": 200000,
                 "tiers": [{"hit": 0.1, "miss": 2.0, "out": 10.0}]
-            },
-            "gemini-4-carbon": {
-                "display_name": "Gemini 4 Carbon",
-                "short_name": "4 Carbon",
-                "vendor": "Gemini",
-                "badge": "ULTRA",
-                "quota_pool": "carbon",
-                "pool_label": "Carbon 独立池",
-                "context_window": 1048576,
-                "tiers": [{"hit": 0.15, "miss": 3.0, "out": 15.0}]
             }
         },
         "limits": {
@@ -585,9 +585,13 @@ _DIRECT_HTTPS_OPENER = urllib.request.build_opener(
 )
 
 _SHARED_POOL_PARTNERS = (
+    ("gemini-4-neon", "gemini-4-carbon"),
     ("gemini-4-neon", "gemini-4-hydrogen"),
-    ("gemini-4-hydrogen", "gemini-3.8-flash"),
+    ("gemini-4-neon", "gemini-4-argon"),
     ("gemini-4-neon", "gemini-3.8-flash"),
+    ("gemini-4-hydrogen", "gemini-4-carbon"),
+    ("gemini-4-hydrogen", "gemini-4-argon"),
+    ("gemini-4-hydrogen", "gemini-3.8-flash"),
     ("claude-opus-5-5", "claude-sonnet-5-5"),
 )
 
@@ -1186,12 +1190,12 @@ def _collect_stats_uncached(requested_conv_id=None):
 
     featured_models = [
         "gemini-4-neon",
+        "gemini-4-carbon",
         "gemini-4-hydrogen",
-        "gemini-3.8-flash",
         "gemini-4-argon",
+        "gemini-3.8-flash",
         "claude-opus-5-5",
         "claude-sonnet-5-5",
-        "gemini-4-carbon",
     ]
     pool_buckets = {}
     for mk in featured_models:
@@ -1405,11 +1409,11 @@ def _collect_stats_uncached(requested_conv_id=None):
         r5_str = "本地估算 " + r5_dt.strftime("%H:%M")
         r7_str = "本地估算 " + r7_dt.strftime("%m-%d %H:%M")
 
-        disabled = (mk == "gemini-4-carbon")
+        disabled = False
         is_weekly = False
-        pct = 0 if disabled else rem5
-        reset_str = "暂不可用 · 需 Ultra" if disabled else r5_str
-        window_label = "Unavailable" if disabled else "本地估算 5h"
+        pct = rem5
+        reset_str = r5_str
+        window_label = "本地估算 5h"
 
         if mk in live_quotas:
             lq = live_quotas[mk]
@@ -1469,18 +1473,26 @@ def _collect_stats_uncached(requested_conv_id=None):
     if active_mq is None and model_quotas:
         active_mq = model_quotas[0]
 
-    active_pool = active_mq["quota_pool"] if active_mq else "flash_hydrogen"
-    companion_target = "gemini-4-neon" if active_pool == "argon" else "gemini-4-argon"
+    active_pool = active_mq["quota_pool"] if active_mq else "gemini"
+    companion_target = "gemini-4-neon" if active_pool == "claude" else "claude-sonnet-5-5"
     companion_mq = next((x for x in model_quotas if x["id"] == companion_target and not x["disabled"]), None)
     if companion_mq is None:
         companion_mq = next((x for x in model_quotas if x["quota_pool"] != active_pool and not x["disabled"]), active_mq)
+
+    active_row_label = (
+        "未解锁" if (active_mq and active_mq["disabled"])
+        else ("Claude 池" if active_pool == "claude" else "Gemini 池")
+    )
+    comp_pool = companion_mq["quota_pool"] if companion_mq else ("gemini" if active_pool == "claude" else "claude")
+    comp_short_label = "Claude 池" if comp_pool == "claude" else ("Gemini 池" if comp_pool in ("gemini", "flash_hydrogen") else (companion_mq["short_name"] if companion_mq else "Claude 池"))
 
     active_5h = {
         "remaining_pct": active_mq["remaining_pct"] if active_mq else 100,
         "used_turns": active_mq["five_hour_used_turns"] if active_mq else 0,
         "limit_turns": active_mq["five_hour_limit_turns"] if active_mq else 1500,
         "reset_display": active_mq["reset_display"] if active_mq else "实时同步",
-        "pool_label": active_mq["pool_label"] if active_mq else "独立池",
+        "row_label": active_row_label,
+        "pool_label": active_mq["pool_label"] if active_mq else "Gemini 共享池",
         "window_label": active_mq["window_label"] if active_mq else "5h 周期池",
         "disabled": bool(active_mq["disabled"]) if active_mq else False,
     }
@@ -1489,8 +1501,8 @@ def _collect_stats_uncached(requested_conv_id=None):
         "used_turns": companion_mq["weekly_used_turns"] if companion_mq else 0,
         "limit_turns": companion_mq["weekly_limit_turns"] if companion_mq else 9000,
         "reset_display": companion_mq["reset_display"] if companion_mq else "实时同步",
-        "short_label": "Neon/H/F" if (companion_mq and companion_mq["quota_pool"] == "flash_hydrogen") else (companion_mq["short_name"] if companion_mq else "Argon"),
-        "pool_label": companion_mq["pool_label"] if companion_mq else "独立池",
+        "short_label": comp_short_label,
+        "pool_label": companion_mq["pool_label"] if companion_mq else "Claude 独立池",
     }
 
     return {

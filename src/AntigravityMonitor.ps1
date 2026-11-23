@@ -1,11 +1,9 @@
 ﻿<#
 .SYNOPSIS
     Antigravity Token Monitor & Live Official Quota Synchronizer
-    Supports 7 Models across 4 Independent Quota Pools:
-    - Neon/H/F Shared Pool: Gemini 4 Neon, Gemini 4 Hydrogen, Gemini 3.8 Flash
-    - Argon Independent Pool: Gemini 4 Argon
+    Supports 7 Models across 2 Family Quota Pools:
+    - Gemini Shared Pool: Gemini 4 Neon, Gemini 4 Carbon, Gemini 4 Hydrogen, Gemini 4 Argon, Gemini 3.8 Flash
     - Claude Independent Pool: Claude Opus 5.5, Claude Sonnet 5.5
-    - Carbon Independent Pool: Gemini 4 Carbon (Disabled / Ultra)
     Fetches real-time official quotas directly from Antigravity language_server (GetUserStatus RPC)
 #>
 
@@ -80,8 +78,8 @@ class AntigravityMonitor {
         UsedPct = 0
         RemainingPct = 100
         ResetDisplay = "重置 --:--"
-        RowLabel = "当前池"
-        PoolLabel = "Neon/H/F 共享池"
+        RowLabel = "Gemini 池"
+        PoolLabel = "Gemini 共享池"
         WindowLabel = "5h 周期池"
         Disabled = $false
         IsWeekly = $false
@@ -95,8 +93,8 @@ class AntigravityMonitor {
         UsedPct = 0
         RemainingPct = 100
         ResetDisplay = "重置 --:--"
-        ShortLabel = "Argon"
-        PoolLabel = "Argon 独立池"
+        ShortLabel = "Claude 池"
+        PoolLabel = "Claude 独立池"
     }
 
     [System.Collections.Generic.List[hashtable]]$ModelQuotas = [System.Collections.Generic.List[hashtable]]::new()
@@ -239,14 +237,14 @@ class AntigravityMonitor {
         if ($t -match 'model_placeholder_m532|model_placeholder_m533|model_placeholder_m534|model_placeholder_m535|model_placeholder_m537|gemini-pro-orchestrator-neon|gemini-4-neon|neon') {
             return "gemini-4-neon"
         }
-        if ($t -match 'model_placeholder_m525|model_placeholder_m526|model_placeholder_m527|model_placeholder_m528|model_placeholder_m669|gemini-flash-worker-agy|gemini-flash-worker|flash-worker|gemini-4-hydrogen|hydrogen') {
-            return "gemini-4-hydrogen"
+        if ($t -match 'model_placeholder_m417|model_placeholder_m418|model_placeholder_m419|model_placeholder_m681|model_placeholder_m668|gemini-pro-orchestrator-argon|gemini-pro-orchestrator-g1-pro|gemini-4-argon|argon') {
+            return "gemini-4-argon"
         }
-        if ($t -match 'model_placeholder_m670|gemini-4-carbon|carbon') {
+        if ($t -match 'model_placeholder_m427|model_placeholder_m437|model_placeholder_m438|model_placeholder_m667|model_placeholder_m670|gemini-pro-orchestrator|orchestrator|gemini-4-carbon|carbon') {
             return "gemini-4-carbon"
         }
-        if ($t -match 'model_placeholder_m417|model_placeholder_m418|model_placeholder_m419|model_placeholder_m668|gemini-pro-orchestrator-g1-pro|gemini-pro-orchestrator|orchestrator|gemini-4-argon|argon') {
-            return "gemini-4-argon"
+        if ($t -match 'model_placeholder_m525|model_placeholder_m526|model_placeholder_m527|model_placeholder_m528|model_placeholder_m669|gemini-flash-worker-agy|gemini-flash-worker|flash-worker|gemini-4-hydrogen|hydrogen') {
+            return "gemini-4-hydrogen"
         }
         if ($t -match 'model_placeholder_m400|model_placeholder_m401|model_placeholder_m402|model_placeholder_m26|claude-opus|opus') {
             return "claude-opus-5-5"
@@ -529,9 +527,13 @@ class AntigravityMonitor {
             }
 
             foreach ($pair in @(
+                @("gemini-4-neon", "gemini-4-carbon"),
                 @("gemini-4-neon", "gemini-4-hydrogen"),
-                @("gemini-4-hydrogen", "gemini-3.8-flash"),
+                @("gemini-4-neon", "gemini-4-argon"),
                 @("gemini-4-neon", "gemini-3.8-flash"),
+                @("gemini-4-hydrogen", "gemini-4-carbon"),
+                @("gemini-4-hydrogen", "gemini-4-argon"),
+                @("gemini-4-hydrogen", "gemini-3.8-flash"),
                 @("claude-opus-5-5", "claude-sonnet-5-5")
             )) {
                 $a = $pair[0]; $b = $pair[1]
@@ -802,17 +804,17 @@ class AntigravityMonitor {
             if ($data.five_hour) {
                 $this.FiveHour.RemainingPct = [int]$data.five_hour.remaining_pct
                 $this.FiveHour.ResetDisplay = [string]$data.five_hour.reset_display
-                $this.FiveHour.PoolLabel = if ($null -ne $data.five_hour.pool_label) { [string]$data.five_hour.pool_label } else { "独立池" }
+                $this.FiveHour.PoolLabel = if ($null -ne $data.five_hour.pool_label) { [string]$data.five_hour.pool_label } else { "Gemini 共享池" }
                 $this.FiveHour.WindowLabel = if ($null -ne $data.five_hour.window_label) { [string]$data.five_hour.window_label } else { "5h 周期池" }
                 $this.FiveHour.Disabled = ($null -ne $data.five_hour.disabled -and [bool]$data.five_hour.disabled)
-                $this.FiveHour.RowLabel = if ($this.FiveHour.Disabled) { "未解锁" } elseif ($this.FiveHour.WindowLabel -like "*多日*") { "多日池" } else { "5h 池" }
+                $this.FiveHour.RowLabel = if ($null -ne $data.five_hour.row_label -and ![string]::IsNullOrEmpty([string]$data.five_hour.row_label)) { [string]$data.five_hour.row_label } elseif ($this.FiveHour.Disabled) { "未解锁" } elseif ($this.FiveHour.PoolLabel -like "Claude*") { "Claude 池" } else { "Gemini 池" }
             }
             $comp = if ($null -ne $data.companion_pool) { $data.companion_pool } else { $data.weekly }
             if ($comp) {
                 $this.Weekly.RemainingPct = [int]$comp.remaining_pct
                 $this.Weekly.ResetDisplay = [string]$comp.reset_display
-                $this.Weekly.ShortLabel = if ($null -ne $comp.short_label -and ![string]::IsNullOrEmpty([string]$comp.short_label)) { [string]$comp.short_label } else { "Argon" }
-                $this.Weekly.PoolLabel = if ($null -ne $comp.pool_label) { [string]$comp.pool_label } else { "独立池" }
+                $this.Weekly.ShortLabel = if ($null -ne $comp.short_label -and ![string]::IsNullOrEmpty([string]$comp.short_label)) { [string]$comp.short_label } else { "Claude 池" }
+                $this.Weekly.PoolLabel = if ($null -ne $comp.pool_label) { [string]$comp.pool_label } else { "Claude 独立池" }
             }
 
             # 6. Sync ModelQuotas (Canonical Keys Matching HakimiWidget.ps1)
@@ -1014,12 +1016,12 @@ class AntigravityMonitor {
 
         $realModels = @(
             "gemini-4-neon",
+            "gemini-4-carbon",
             "gemini-4-hydrogen",
-            "gemini-3.8-flash",
             "gemini-4-argon",
+            "gemini-3.8-flash",
             "claude-opus-5-5",
-            "claude-sonnet-5-5",
-            "gemini-4-carbon"
+            "claude-sonnet-5-5"
         )
         $poolBuckets = @{}
         foreach ($mk in $realModels) {
@@ -1047,9 +1049,9 @@ class AntigravityMonitor {
                 if ($f.LastWriteTimeUtc -lt $cutoff7d) { continue }
                 $cid = $f.Directory.Parent.Parent.Name
                 $convModel = $this.GetConversationModel($cid)
-                $pname = if ($this.Pricing -and $this.Pricing.models.ContainsKey($convModel)) { [string]$this.Pricing.models[$convModel].quota_pool } else { "flash_hydrogen" }
+                $pname = if ($this.Pricing -and $this.Pricing.models.ContainsKey($convModel)) { [string]$this.Pricing.models[$convModel].quota_pool } else { "gemini" }
                 if (!$poolBuckets.ContainsKey($pname)) {
-                    $pname = "flash_hydrogen"
+                    $pname = "gemini"
                 }
 
                 $fKey = $f.FullName
@@ -1177,11 +1179,11 @@ class AntigravityMonitor {
                 $res5h = "本地估算 " + $r5Dt.ToLocalTime().ToString("HH:mm")
                 $res7d = "本地估算 " + $r7Dt.ToLocalTime().ToString("MM-dd HH:mm")
 
-                $isDis = ($mk -eq "gemini-4-carbon")
+                $isDis = $false
                 $isWeekly = $false
-                $pct = if ($isDis) { 0 } else { $rem5h }
-                $resDisp = if ($isDis) { "暂不可用 · 需 Ultra" } else { $res5h }
-                $winLabel = if ($isDis) { "Unavailable" } else { "本地估算 5h" }
+                $pct = $rem5h
+                $resDisp = $res5h
+                $winLabel = "本地估算 5h"
 
                 if ($null -ne $live -and $live.Models.ContainsKey($mk)) {
                     $lq = $live.Models[$mk]
@@ -1246,9 +1248,9 @@ class AntigravityMonitor {
             $this.FiveHour.PoolLabel = $activeMq.PoolLabel
             $this.FiveHour.WindowLabel = $activeMq.WindowLabel
             $this.FiveHour.Disabled = $activeMq.Disabled
-            $this.FiveHour.RowLabel = if ($activeMq.Disabled) { "未解锁" } elseif ($activeMq.IsWeekly) { "多日池" } else { "5h 池" }
+            $this.FiveHour.RowLabel = if ($activeMq.Disabled) { "未解锁" } elseif ($activeMq.QuotaPool -eq "claude") { "Claude 池" } else { "Gemini 池" }
 
-            $compKey = if ($activeMq.QuotaPool -eq "argon") { "gemini-4-neon" } else { "gemini-4-argon" }
+            $compKey = if ($activeMq.QuotaPool -eq "claude") { "gemini-4-neon" } else { "claude-sonnet-5-5" }
             $compMq = $null
             foreach ($item in $this.ModelQuotas) {
                 if ($item.Key -eq $compKey -and !$item.Disabled) { $compMq = $item; break }
@@ -1265,7 +1267,7 @@ class AntigravityMonitor {
             $this.Weekly.UsedPct = (100 - $compMq.RemainingPct)
             $this.Weekly.RemainingPct = $compMq.RemainingPct
             $this.Weekly.ResetDisplay = $compMq.ResetDisplay
-            $this.Weekly.ShortLabel = if ($compMq.QuotaPool -eq "flash_hydrogen") { "Neon/H/F" } else { [string]$compMq.ShortName }
+            $this.Weekly.ShortLabel = if ($compMq.QuotaPool -eq "claude") { "Claude 池" } else { "Gemini 池" }
             $this.Weekly.PoolLabel = $compMq.PoolLabel
         }
     }

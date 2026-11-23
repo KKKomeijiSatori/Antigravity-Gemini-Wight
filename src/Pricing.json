@@ -9,9 +9,30 @@
       "short_name": "4 Neon",
       "vendor": "Gemini",
       "badge": "NEW",
-      "quota_pool": "flash_hydrogen",
-      "pool_label": "Neon/H/F 共享池",
-      "note": "反重力最新旗舰深度推理模型 · 与 4 Hydrogen / 3.8 Flash 共享 5h 池 ($3/$15, 缓存命中 $0.15, 95% 折扣)",
+      "quota_pool": "gemini",
+      "pool_label": "Gemini 共享池",
+      "note": "反重力旗舰深度推理主力 · Gemini 家族共享 5h 池 ($3/$15, 缓存命中 $0.15, 95% 折扣)",
+      "context_window": 1048576,
+      "quota_5h_turns": 2500,
+      "quota_5h_tokens": 80000000,
+      "quota_weekly_turns": 15000,
+      "quota_weekly_tokens": 500000000,
+      "tiers": [
+        {
+          "hit": 0.15,
+          "miss": 3.0,
+          "out": 15.0
+        }
+      ]
+    },
+    "gemini-4-carbon": {
+      "display_name": "Gemini 4 Carbon",
+      "short_name": "4 Carbon",
+      "vendor": "Gemini",
+      "badge": "NEW",
+      "quota_pool": "gemini",
+      "pool_label": "Gemini 共享池",
+      "note": "反重力超强长程复杂任务模型 · 已开放并入 Gemini 共享 5h 池 ($3/$15, 缓存命中 $0.15)",
       "context_window": 1048576,
       "quota_5h_turns": 2500,
       "quota_5h_tokens": 80000000,
@@ -30,30 +51,9 @@
       "short_name": "4 Hydrogen",
       "vendor": "Gemini",
       "badge": "NEW",
-      "quota_pool": "flash_hydrogen",
-      "pool_label": "Neon/H/F 共享池",
-      "note": "反重力高速主力 · 与 4 Neon / 3.8 Flash 共享 5h 池 ($0.75/$3.75, 缓存命中 $0.075)",
-      "context_window": 1048576,
-      "quota_5h_turns": 2500,
-      "quota_5h_tokens": 80000000,
-      "quota_weekly_turns": 15000,
-      "quota_weekly_tokens": 500000000,
-      "tiers": [
-        {
-          "hit": 0.075,
-          "miss": 0.75,
-          "out": 3.75
-        }
-      ]
-    },
-    "gemini-3.8-flash": {
-      "display_name": "Gemini 3.8 Flash",
-      "short_name": "3.8 Flash",
-      "vendor": "Gemini",
-      "badge": "FLASH",
-      "quota_pool": "flash_hydrogen",
-      "pool_label": "Neon/H/F 共享池",
-      "note": "反重力极速高频主力模型 · 与 4 Neon / 4 Hydrogen 共享 5h 池 ($0.75/$3.75, 缓存命中 $0.075)",
+      "quota_pool": "gemini",
+      "pool_label": "Gemini 共享池",
+      "note": "反重力高速执行主力 · Gemini 家族共享 5h 池 ($0.75/$3.75, 缓存命中 $0.075)",
       "context_window": 1048576,
       "quota_5h_turns": 2500,
       "quota_5h_tokens": 80000000,
@@ -71,20 +71,41 @@
       "display_name": "Gemini 4 Argon",
       "short_name": "4 Argon",
       "vendor": "Gemini",
-      "badge": "FLAGSHIP",
-      "quota_pool": "argon",
-      "pool_label": "Argon 独立池",
-      "note": "反重力旗舰深度推理模型 · 独立配额池 ($2/$10, 缓存命中 $0.10)",
+      "badge": "LEGACY",
+      "quota_pool": "gemini",
+      "pool_label": "Gemini 共享池",
+      "note": "初代 Gemini 4 模型 (11月30日下线) · 已并入 Gemini 共享 5h 池 ($2/$10, 缓存命中 $0.10)",
       "context_window": 1048576,
-      "quota_5h_turns": 600,
-      "quota_5h_tokens": 25000000,
-      "quota_weekly_turns": 3500,
-      "quota_weekly_tokens": 150000000,
+      "quota_5h_turns": 2500,
+      "quota_5h_tokens": 80000000,
+      "quota_weekly_turns": 15000,
+      "quota_weekly_tokens": 500000000,
       "tiers": [
         {
           "hit": 0.1,
           "miss": 2.0,
           "out": 10.0
+        }
+      ]
+    },
+    "gemini-3.8-flash": {
+      "display_name": "Gemini 3.8 Flash",
+      "short_name": "3.8 Flash",
+      "vendor": "Gemini",
+      "badge": "LEGACY",
+      "quota_pool": "gemini",
+      "pool_label": "Gemini 共享池",
+      "note": "上一代高频极速模型 (11月30日下线) · Gemini 共享 5h 池 ($0.75/$3.75, 缓存命中 $0.075)",
+      "context_window": 1048576,
+      "quota_5h_turns": 2500,
+      "quota_5h_tokens": 80000000,
+      "quota_weekly_turns": 15000,
+      "quota_weekly_tokens": 500000000,
+      "tiers": [
+        {
+          "hit": 0.075,
+          "miss": 0.75,
+          "out": 3.75
         }
       ]
     },
@@ -127,27 +148,6 @@
           "hit": 0.1,
           "miss": 2.0,
           "out": 10.0
-        }
-      ]
-    },
-    "gemini-4-carbon": {
-      "display_name": "Gemini 4 Carbon",
-      "short_name": "4 Carbon",
-      "vendor": "Gemini",
-      "badge": "ULTRA",
-      "quota_pool": "carbon",
-      "pool_label": "Carbon 独立池",
-      "note": "Ultra 订阅专属模型 · 当前账号暂不可用 ($3/$15, 缓存命中 $0.15)",
-      "context_window": 1048576,
-      "quota_5h_turns": 400,
-      "quota_5h_tokens": 15000000,
-      "quota_weekly_turns": 2200,
-      "quota_weekly_tokens": 90000000,
-      "tiers": [
-        {
-          "hit": 0.15,
-          "miss": 3.0,
-          "out": 15.0
         }
       ]
     }

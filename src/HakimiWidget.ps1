@@ -1165,7 +1165,7 @@ function Update-UI {
     # 1. Update Base Bubble: Row 1 = Active Model Pool, Row 2 = Companion Independent Pool
     $isActDis = [bool]$Ui.FiveHour.Disabled
     if ($null -ne $FiveHourLabel) {
-        $FiveHourLabel.Text = if ($Ui.FiveHour.RowLabel) { [string]$Ui.FiveHour.RowLabel } else { "5h 池" }
+        $FiveHourLabel.Text = if ($Ui.FiveHour.RowLabel) { [string]$Ui.FiveHour.RowLabel } else { "Gemini 池" }
     }
     $rem5h = [int]$Ui.FiveHour.RemainingPct
     if ($isActDis) {
@@ -1176,17 +1176,17 @@ function Update-UI {
     } else {
         $FiveHourValue.Text = "$rem5h%"
         $FiveHourValue.Foreground = Get-FrozenBrush "#0F172A"
-        $FiveHourBarFill.Width = [Math]::Round(118.0 * ($rem5h / 100.0))
+        $FiveHourBarFill.Width = [Math]::Round(108.0 * ($rem5h / 100.0))
         $FiveHourBarFill.Background = Get-QuotaColorBrush $rem5h ([bool]$Ui.FiveHour.IsWeekly)
         $FiveHourResetText.Text = "⏳ $($Ui.FiveHour.ResetDisplay)"
     }
 
     if ($null -ne $WeeklyLabel) {
-        $WeeklyLabel.Text = if ($Ui.Weekly.ShortLabel) { [string]$Ui.Weekly.ShortLabel } else { "Argon" }
+        $WeeklyLabel.Text = if ($Ui.Weekly.ShortLabel) { [string]$Ui.Weekly.ShortLabel } else { "Claude 池" }
     }
     $rem7d = [int]$Ui.Weekly.RemainingPct
     $WeeklyValue.Text = "$rem7d%"
-    $WeeklyBarFill.Width = [Math]::Round(118.0 * ($rem7d / 100.0))
+    $WeeklyBarFill.Width = [Math]::Round(108.0 * ($rem7d / 100.0))
     $WeeklyBarFill.Background = Get-QuotaColorBrush $rem7d $true
     $WeeklyResetText.Text = "📅 $($Ui.Weekly.ResetDisplay)"
 
@@ -1239,6 +1239,7 @@ function Update-UI {
     $state.QuotaStackDirty = $false
 
     $poolBadgePalette = @{
+        "gemini"         = @{ Bg = "#2210B981"; Border = "#5510B981"; Text = "#34D399" }
         "flash_hydrogen" = @{ Bg = "#2210B981"; Border = "#5510B981"; Text = "#34D399" }
         "argon"          = @{ Bg = "#264F46E5"; Border = "#66818CF8"; Text = "#A5B4FC" }
         "claude"         = @{ Bg = "#22F59E0B"; Border = "#55F59E0B"; Text = "#FCD34D" }
@@ -1251,7 +1252,7 @@ function Update-UI {
         $isAct = [bool]$mq.IsActive
         $isDis = [bool]$mq.Disabled
         $isClaude = ([string]$mq.Vendor -eq "Claude")
-        $qPool = if ($mq.QuotaPool) { [string]$mq.QuotaPool } else { "argon" }
+        $qPool = if ($mq.QuotaPool) { [string]$mq.QuotaPool } else { "gemini" }
         $pctVal = if ($null -ne $mq.RemainingPct) { [int]$mq.RemainingPct } else { [int]$mq.FiveHourRemainingPct }
         $resText = if ($mq.ResetDisplay) { [string]$mq.ResetDisplay } else { [string]$mq.FiveHourReset }
         $winText = if ($mq.WindowLabel) { [string]$mq.WindowLabel } else { "5h 周期池" }
@@ -1306,7 +1307,7 @@ function Update-UI {
         } elseif ($poolBadgePalette.ContainsKey($qPool)) {
             $poolBadgePalette[$qPool]
         } else {
-            $poolBadgePalette["argon"]
+            $poolBadgePalette["gemini"]
         }
         $pBadge = [System.Windows.Controls.Border]::new()
         $pBadge.CornerRadius = [System.Windows.CornerRadius]::new(4)

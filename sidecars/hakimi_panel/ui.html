@@ -534,7 +534,7 @@
   <!-- 0.5 Independent Pool Quotas + Per-Model Matrix -->
   <div class="card">
     <div class="section-title">
-      <span>🐉 各模型额度池与独立重置时间 (点击切换)</span>
+      <span>🐉 Gemini 共享池 &amp; Claude 独立池 (点击切换模型)</span>
       <span id="txtActiveQuotaReset" style="font-size:10.5px;color:var(--blue)">实时池状态同步中</span>
     </div>
     <div id="modelQuotaList" style="display:flex;flex-direction:column;gap:6px;"></div>
@@ -886,6 +886,7 @@
           document.getElementById('txtActiveQuotaReset').innerText = `${activeMq.pool_label} · ${activeMq.reset_display}`;
         }
         const poolStyleMap = {
+          gemini:         { bg: 'rgba(16,185,129,0.14)', border: 'rgba(16,185,129,0.35)', text: '#34d399' },
           flash_hydrogen: { bg: 'rgba(16,185,129,0.14)', border: 'rgba(16,185,129,0.35)', text: '#34d399' },
           argon:          { bg: 'rgba(99,102,241,0.16)', border: 'rgba(129,140,248,0.38)', text: '#a5b4fc' },
           claude:         { bg: 'rgba(245,158,11,0.14)', border: 'rgba(245,158,11,0.35)', text: '#fbbf24' },
@@ -900,7 +901,7 @@
             : (pct <= 20 ? 'var(--rose)' : (pct <= 40 ? 'var(--amber)' : (m.is_weekly ? 'var(--blue)' : 'var(--emerald)')));
           const pStyle = isDis
             ? { bg: 'rgba(148,163,184,0.14)', border: 'rgba(148,163,184,0.30)', text: '#94a3b8' }
-            : (poolStyleMap[m.quota_pool] || poolStyleMap.argon);
+            : (poolStyleMap[m.quota_pool] || poolStyleMap.gemini);
           const activeBorder = m.is_active
             ? 'border:1px solid var(--blue);background:rgba(56,189,248,0.10);'
             : (isDis ? 'border:1px dashed var(--card-border);background:rgba(15,23,42,0.35);opacity:0.72;' : 'border:1px solid var(--card-border);background:var(--card-inner);');
