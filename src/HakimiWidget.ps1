@@ -548,6 +548,7 @@ $DefaultConfig = @{
     click_through = $false
     follow_antigravity = $true
     hide_with_antigravity = $true
+    quota_view_mode = "5h"
     active_model = "gemini-4-hydrogen"
     active_plan = "free"
     antigravity_brain_path = Join-Path $env:USERPROFILE ".gemini\antigravity\brain"
@@ -561,6 +562,9 @@ if (Test-Path $ConfigPath) {
             $Config[$p.Name] = $p.Value
         }
     } catch {}
+}
+if ($Config.quota_view_mode -notin @("5h", "weekly")) {
+    $Config.quota_view_mode = "5h"
 }
 
 if ($null -eq $Config.anchor_corner) {
@@ -611,6 +615,11 @@ $Monitor = [AntigravityMonitor]::new(
 )
 if ($Monitor.Pricing -and !$Monitor.Pricing.models.ContainsKey($Config.active_model)) {
     $Config.active_model = $Monitor.ActiveModel
+}
+if ($Monitor.QuotaViewMode -notin @("5h", "weekly")) {
+    $Monitor.SetQuotaViewMode([string]$Config.quota_view_mode)
+} else {
+    $Config.quota_view_mode = $Monitor.QuotaViewMode
 }
 
 # Initialize Memory-Pinned Audio Player with DeepSeek Whale Default Pet Sounds (press.wav / D1.mp3 + release.wav / D2.mp3)
@@ -763,8 +772,23 @@ $MenuFacingScale = $window.FindName("MenuFacingScale")
             <Border Background="#1AFFFFFF" CornerRadius="10" Padding="9,7" Margin="0,0,0,8">
                 <StackPanel>
                     <Grid Margin="0,0,0,5">
-                        <TextBlock Text="🐉 Gemini / Claude 5h与每周剩余限额 (点击切换)" Foreground="#94A3B8" FontSize="10" FontWeight="SemiBold"/>
-                        <TextBlock x:Name="DetailPlanBadge" Text="Free 层" Foreground="#38BDF8" FontSize="10" FontWeight="Bold" HorizontalAlignment="Right"/>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="🐉 模型池额度 (点击切换)" Foreground="#94A3B8" FontSize="10" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                        <Border Grid.Column="1" Background="#1A0F172A" BorderBrush="#3364748B" BorderThickness="1" CornerRadius="6" Padding="2" Margin="0,0,6,0" VerticalAlignment="Center">
+                            <StackPanel Orientation="Horizontal">
+                                <Border x:Name="DetailMode5hBtn" CornerRadius="4.5" Padding="6,1.5" Background="#3310B981" Cursor="Hand">
+                                    <TextBlock x:Name="DetailMode5hText" Text="5H额度" Foreground="#34D399" FontSize="9" FontWeight="Bold"/>
+                                </Border>
+                                <Border x:Name="DetailModeWeeklyBtn" CornerRadius="4.5" Padding="6,1.5" Background="Transparent" Cursor="Hand" Margin="2,0,0,0">
+                                    <TextBlock x:Name="DetailModeWeeklyText" Text="总额度" Foreground="#94A3B8" FontSize="9" FontWeight="Bold"/>
+                                </Border>
+                            </StackPanel>
+                        </Border>
+                        <TextBlock x:Name="DetailPlanBadge" Grid.Column="2" Text="Free 层" Foreground="#38BDF8" FontSize="10" FontWeight="Bold" VerticalAlignment="Center"/>
                     </Grid>
                     <StackPanel x:Name="ModelQuotaStack"/>
                 </StackPanel>
@@ -833,6 +857,10 @@ $detailWindow = [System.Windows.Markup.XamlReader]::Load($detailReader)
 
 $QuadrantBadge = $detailWindow.FindName("QuadrantBadge")
 $CloseDetailBtn = $detailWindow.FindName("CloseDetailBtn")
+$DetailMode5hBtn = $detailWindow.FindName("DetailMode5hBtn")
+$DetailMode5hText = $detailWindow.FindName("DetailMode5hText")
+$DetailModeWeeklyBtn = $detailWindow.FindName("DetailModeWeeklyBtn")
+$DetailModeWeeklyText = $detailWindow.FindName("DetailModeWeeklyText")
 $DetailPlanBadge = $detailWindow.FindName("DetailPlanBadge")
 $ModelQuotaStack = $detailWindow.FindName("ModelQuotaStack")
 $DetailRpmText = $detailWindow.FindName("DetailRpmText")
@@ -1115,6 +1143,7 @@ function New-MonitorSnapshot($mon) {
     return @{
         ActiveModel = [string]$mon.ActiveModel
         ActivePlan = [string]$mon.ActivePlan
+        QuotaViewMode = [string]$mon.QuotaViewMode
         LivePlanName = [string]$mon.LivePlanName
         FiveHour = $mon.FiveHour.Clone()
         Weekly = $mon.Weekly.Clone()
@@ -1138,19 +1167,46 @@ $script:BgSync = [hashtable]::Synchronized(@{
 })
 $script:LastUiVersion = 0L
 
-function Invoke-AsyncModelSwitch([string]$modelKey, [string]$planKey) {
+function Invoke-AsyncConfigSync([string]$modelKey, [string]$planKey, [string]$quotaMode) {
+    $normMode = if ($quotaMode -eq "weekly") { "weekly" } else { "5h" }
     $script:UiData.ActiveModel = $modelKey
     $script:UiData.ActivePlan = $planKey
+    $script:UiData.QuotaViewMode = $normMode
     foreach ($mq in $script:UiData.ModelQuotas) {
         $mq.IsActive = ($mq.Key -eq $modelKey)
+        if (!$mq.Disabled) {
+            if ($normMode -eq "weekly") {
+                $mq.IsWeekly = $true
+                $mq.RemainingPct = [int]$mq.WeeklyRemainingPct
+                $mq.ResetDisplay = [string]$mq.WeeklyReset
+                $mq.WindowLabel = if ([string]$mq.WeeklyReset -like "本地估算*") { "本地估算周额" } else { "总额度 (周限)" }
+            } else {
+                $mq.IsWeekly = $false
+                $mq.RemainingPct = [int]$mq.FiveHourRemainingPct
+                $mq.ResetDisplay = [string]$mq.FiveHourReset
+                $mq.WindowLabel = if ([string]$mq.FiveHourReset -like "本地估算*") { "本地估算 5h" } else { "5h 周期池" }
+            }
+        }
     }
     $state.QuotaStackDirty = $true
     Update-UI
     $script:BgSync.PendingConfig = @{
         active_model = $modelKey
         active_plan = $planKey
+        quota_view_mode = $normMode
     }
     try { [void]$script:BgSync.WakeEvent.Set() } catch {}
+}
+
+function Invoke-AsyncModelSwitch([string]$modelKey, [string]$planKey) {
+    Invoke-AsyncConfigSync $modelKey $planKey ([string]$Config.quota_view_mode)
+}
+
+function Invoke-AsyncQuotaModeSwitch([string]$quotaMode) {
+    $normMode = if ($quotaMode -eq "weekly") { "weekly" } else { "5h" }
+    $Config.quota_view_mode = $normMode
+    Save-Config
+    Invoke-AsyncConfigSync ([string]$script:UiData.ActiveModel) ([string]$Config.active_plan) $normMode
 }
 
 # Update UI from Snapshot ($script:UiData) — 0ms I/O on UI thread
@@ -1159,13 +1215,14 @@ function Update-UI {
     $mInfo = $script:PricingModels[$Ui.ActiveModel]
     $shortName = if ($mInfo -and $mInfo.short_name) { $mInfo.short_name } else { "4 Hydrogen" }
     $vendorName = if ($mInfo -and $mInfo.vendor) { $mInfo.vendor } else { "Gemini" }
-    $HeaderTitle.Text = "$vendorName 额度池"
+    $poolHeader = if ($Ui.FiveHour.PoolLabel) { [string]$Ui.FiveHour.PoolLabel } else { "$vendorName 共享池" }
+    $HeaderTitle.Text = $poolHeader
     $ActiveModelBadge.Text = $shortName
 
-    # 1. Update Base Bubble: Row 1 = Active Model Pool, Row 2 = Companion Independent Pool
+    # 1. Update Base Bubble: Top Row = 5H 额度, Bottom Row = 总额度 (Weekly)
     $isActDis = [bool]$Ui.FiveHour.Disabled
     if ($null -ne $FiveHourLabel) {
-        $FiveHourLabel.Text = if ($Ui.FiveHour.RowLabel) { [string]$Ui.FiveHour.RowLabel } else { "Gemini 池" }
+        $FiveHourLabel.Text = if ($isActDis) { "未解锁" } elseif ($Ui.FiveHour.RowLabel) { [string]$Ui.FiveHour.RowLabel } else { "5H 额度" }
     }
     $rem5h = [int]$Ui.FiveHour.RemainingPct
     if ($isActDis) {
@@ -1177,18 +1234,27 @@ function Update-UI {
         $FiveHourValue.Text = "$rem5h%"
         $FiveHourValue.Foreground = Get-FrozenBrush "#0F172A"
         $FiveHourBarFill.Width = [Math]::Round(108.0 * ($rem5h / 100.0))
-        $FiveHourBarFill.Background = Get-QuotaColorBrush $rem5h ([bool]$Ui.FiveHour.IsWeekly)
+        $FiveHourBarFill.Background = Get-QuotaColorBrush $rem5h $false
         $FiveHourResetText.Text = "⏳ $($Ui.FiveHour.ResetDisplay)"
     }
 
+    $isWkDis = [bool]$Ui.Weekly.Disabled -or $isActDis
     if ($null -ne $WeeklyLabel) {
-        $WeeklyLabel.Text = if ($Ui.Weekly.ShortLabel) { [string]$Ui.Weekly.ShortLabel } else { "Claude 池" }
+        $WeeklyLabel.Text = if ($isWkDis) { "未解锁" } elseif ($Ui.Weekly.ShortLabel) { [string]$Ui.Weekly.ShortLabel } else { "总额度" }
     }
     $rem7d = [int]$Ui.Weekly.RemainingPct
-    $WeeklyValue.Text = "$rem7d%"
-    $WeeklyBarFill.Width = [Math]::Round(108.0 * ($rem7d / 100.0))
-    $WeeklyBarFill.Background = Get-QuotaColorBrush $rem7d $true
-    $WeeklyResetText.Text = "📅 $($Ui.Weekly.ResetDisplay)"
+    if ($isWkDis) {
+        $WeeklyValue.Text = "--"
+        $WeeklyValue.Foreground = Get-FrozenBrush "#94A3B8"
+        $WeeklyBarFill.Width = 0
+        $WeeklyResetText.Text = "🔒 $($Ui.Weekly.ResetDisplay)"
+    } else {
+        $WeeklyValue.Text = "$rem7d%"
+        $WeeklyValue.Foreground = Get-FrozenBrush "#0F172A"
+        $WeeklyBarFill.Width = [Math]::Round(108.0 * ($rem7d / 100.0))
+        $WeeklyBarFill.Background = Get-QuotaColorBrush $rem7d $true
+        $WeeklyResetText.Text = "📅 $($Ui.Weekly.ResetDisplay)"
+    }
 
     $UpdatedText.Text = [string]::Format(
         "今日 ¥{0:F2} · ⚡省 ¥{1:F2} · 详情 ↗",
@@ -1197,6 +1263,20 @@ function Update-UI {
     )
 
     # 2. Update Adaptive Detail Window (Independent Pool-Aware Per-Model Quotas)
+    $viewMode = if ($Ui.QuotaViewMode -eq "weekly") { "weekly" } elseif ($Config.quota_view_mode -eq "weekly") { "weekly" } else { "5h" }
+    if ($null -ne $DetailMode5hBtn -and $null -ne $DetailModeWeeklyBtn) {
+        if ($viewMode -eq "weekly") {
+            $DetailMode5hBtn.Background = Get-FrozenBrush "Transparent"
+            $DetailMode5hText.Foreground = Get-FrozenBrush "#94A3B8"
+            $DetailModeWeeklyBtn.Background = Get-FrozenBrush "#333B82F6"
+            $DetailModeWeeklyText.Foreground = Get-FrozenBrush "#60A5FA"
+        } else {
+            $DetailMode5hBtn.Background = Get-FrozenBrush "#3310B981"
+            $DetailMode5hText.Foreground = Get-FrozenBrush "#34D399"
+            $DetailModeWeeklyBtn.Background = Get-FrozenBrush "Transparent"
+            $DetailModeWeeklyText.Foreground = Get-FrozenBrush "#94A3B8"
+        }
+    }
     if ($null -ne $TogglePetSoundText) {
         $TogglePetSoundText.Text = if ($Config.sound_enabled) { "🔊 摸头音效: 开" } else { "🔇 摸头音效: 关" }
         $TogglePetSoundText.Foreground = if ($Config.sound_enabled) { Get-FrozenBrush "#A5B4FC" } else { Get-FrozenBrush "#64748B" }
@@ -1225,9 +1305,9 @@ function Update-UI {
 
     $sigParts = New-Object System.Collections.Generic.List[string]
     foreach ($mq in $Ui.ModelQuotas) {
-        $sigParts.Add("$($mq.Key):$($mq.RemainingPct):$($mq.Disabled):$($mq.IsActive):$($mq.ResetDisplay)")
+        $sigParts.Add("$($mq.Key):$($mq.RemainingPct):$($mq.FiveHourRemainingPct):$($mq.WeeklyRemainingPct):$($mq.Disabled):$($mq.IsActive):$($mq.ResetDisplay)")
     }
-    $quotaSig = "$($Ui.ActiveModel)|" + ($sigParts -join ";")
+    $quotaSig = "$($Ui.ActiveModel)|$viewMode|" + ($sigParts -join ";")
     if ($quotaSig -ne $state.LastQuotaSig) {
         $state.QuotaStackDirty = $true
     }
@@ -1253,9 +1333,10 @@ function Update-UI {
         $isDis = [bool]$mq.Disabled
         $isClaude = ([string]$mq.Vendor -eq "Claude")
         $qPool = if ($mq.QuotaPool) { [string]$mq.QuotaPool } else { "gemini" }
-        $pctVal = if ($null -ne $mq.RemainingPct) { [int]$mq.RemainingPct } else { [int]$mq.FiveHourRemainingPct }
-        $resText = if ($mq.ResetDisplay) { [string]$mq.ResetDisplay } else { [string]$mq.FiveHourReset }
-        $winText = if ($mq.WindowLabel) { [string]$mq.WindowLabel } else { "5h 周期池" }
+        $isWkMode = ($viewMode -eq "weekly")
+        $pctVal = if ($isDis) { 0 } elseif ($isWkMode) { [int]$mq.WeeklyRemainingPct } else { [int]$mq.FiveHourRemainingPct }
+        $resText = if ($isDis) { [string]$mq.ResetDisplay } elseif ($isWkMode) { [string]$mq.WeeklyReset } else { [string]$mq.FiveHourReset }
+        $winText = if ($isDis) { [string]$mq.WindowLabel } elseif ($isWkMode) { "总额度(周)" } else { "5h 周期池" }
         $poolTxt = if ($isDis) { "暂不可用·Ultra" } elseif ($mq.PoolLabel) { [string]$mq.PoolLabel } else { "独立池" }
 
         $rowBorder = [System.Windows.Controls.Border]::new()
@@ -1374,7 +1455,7 @@ function Update-UI {
             $fil.Background = Get-FrozenBrush "#475569"
         } else {
             $fil.Width = [Math]::Round(172.0 * ($pctVal / 100.0))
-            $fil.Background = Get-QuotaColorBrush $pctVal ([bool]$mq.IsWeekly)
+            $fil.Background = Get-QuotaColorBrush $pctVal $isWkMode
         }
         $trk.Child = $fil
         [System.Windows.Controls.Grid]::SetColumn($trk, 1)
@@ -1388,7 +1469,7 @@ function Update-UI {
         $valTxt.Foreground = if ($isDis) {
             Get-FrozenBrush "#94A3B8"
         } else {
-            Get-QuotaColorBrush $pctVal ([bool]$mq.IsWeekly)
+            Get-QuotaColorBrush $pctVal $isWkMode
         }
         [System.Windows.Controls.Grid]::SetColumn($valTxt, 2)
 
@@ -1806,6 +1887,23 @@ if ($null -ne $ToggleCacheSoundBtn) {
     })
 }
 
+if ($null -ne $DetailMode5hBtn) {
+    $DetailMode5hBtn.Add_MouseLeftButtonUp({
+        param($sender, $e)
+        Play-HakimiSound "press"
+        Invoke-AsyncQuotaModeSwitch "5h"
+        $e.Handled = $true
+    })
+}
+if ($null -ne $DetailModeWeeklyBtn) {
+    $DetailModeWeeklyBtn.Add_MouseLeftButtonUp({
+        param($sender, $e)
+        Play-HakimiSound "press"
+        Invoke-AsyncQuotaModeSwitch "weekly"
+        $e.Handled = $true
+    })
+}
+
 $CloseDetailBtn.Add_MouseLeftButtonUp({
     param($sender, $e)
     $state.DetailOpen = $false
@@ -1888,6 +1986,23 @@ function Rebuild-ContextMenu {
         $miModels.Items.Add($mSub) | Out-Null
     }
     $contextMenu.Items.Add($miModels) | Out-Null
+
+    # Quota View Mode Submenu (5H / Total Weekly)
+    $miQuotaMode = [System.Windows.Controls.MenuItem]::new()
+    $miQuotaMode.Header = "📊 额度显示模式 (5H / 总额度)"
+    foreach ($qm in @(@{k="5h";n="⏱️ 5H 周期额度"}, @{k="weekly";n="📅 每周总额度"})) {
+        $qSub = [System.Windows.Controls.MenuItem]::new()
+        $qSub.Header = $qm.n
+        $qSub.Tag = $qm.k
+        $qSub.IsChecked = ($Config.quota_view_mode -eq $qm.k)
+        $qSub.Add_Click({
+            param($s, $e)
+            Play-HakimiSound "press"
+            Invoke-AsyncQuotaModeSwitch ([string]$s.Tag)
+        })
+        $miQuotaMode.Items.Add($qSub) | Out-Null
+    }
+    $contextMenu.Items.Add($miQuotaMode) | Out-Null
 
     # Plan Tier Submenu
     $miPlan = [System.Windows.Controls.MenuItem]::new()
@@ -2192,6 +2307,7 @@ $script:BgPowerShell.Runspace = $script:BgRunspace
         return @{
             ActiveModel = [string]$m.ActiveModel
             ActivePlan = [string]$m.ActivePlan
+            QuotaViewMode = [string]$m.QuotaViewMode
             LivePlanName = [string]$m.LivePlanName
             FiveHour = $m.FiveHour.Clone()
             Weekly = $m.Weekly.Clone()
@@ -2241,6 +2357,9 @@ $script:BgPowerShell.Runspace = $script:BgRunspace
             if ($null -ne $pc) {
                 $bg.PendingConfig = $null
                 Send-SidecarConfigPatch $pc $agyDataPath
+                if ($pc.quota_view_mode) {
+                    $mon.SetQuotaViewMode([string]$pc.quota_view_mode)
+                }
                 $mon.SetModel([string]$pc.active_model, [string]$pc.active_plan)
             }
 
@@ -2278,6 +2397,9 @@ $pollTimer.Add_Tick({
                 $script:UiData = $snap
                 if (![string]::IsNullOrEmpty($snap.ActiveModel) -and $Config.active_model -ne $snap.ActiveModel) {
                     $Config.active_model = $snap.ActiveModel
+                }
+                if (![string]::IsNullOrEmpty($snap.QuotaViewMode) -and $Config.quota_view_mode -ne $snap.QuotaViewMode) {
+                    $Config.quota_view_mode = $snap.QuotaViewMode
                 }
                 Update-UI
             }

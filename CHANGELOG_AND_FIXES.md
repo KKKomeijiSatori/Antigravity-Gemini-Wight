@@ -244,5 +244,21 @@
     - 桌宠头顶气泡双行额度对比升级为 **`Gemini 池` vs `Claude 池`**（调整左侧标签列宽至 `62px`、进度条宽度 `108px` 防裁切，并在 `server.py` 与 `AntigravityMonitor.ps1` 同步输出 `row_label` / `short_label`）。
     - Sidecar 卡片标题更新为 `Gemini 共享池 & Claude 独立池`，新增 `gemini` 翡翠绿胶囊样式。
 
+---
+
+### 18. 总额度 vs 5H 额度实时双窗同步与一键切换，桌宠气泡改为「上 5H / 下总额度」(v3.5)
+- **官方 `RetrieveUserQuotaSummary` RPC 双窗实测**：
+  - 经验证 Antigravity `language_server` 同时提供 `RetrieveUserQuotaSummary` 接口，为 **Gemini Models**（`gemini-5h` / `gemini-weekly`）与 **Claude and GPT models**（`3p-5h` / `3p-weekly`）分别返回官方真实的 **5 小时限额 (`5h`)** 与 **每周总额度 (`weekly`)** 剩余百分比与重置时间。
+- **核心改动**：
+  - **Sidecar & 监控引擎双窗采集（[`sidecars/hakimi_panel/server.py`](file:///e:/Antigravity/03_哈基米记账插件_2a7e3170/Gemini-Hakimi-Widget/sidecars/hakimi_panel/server.py)、[`src/AntigravityMonitor.ps1`](file:///e:/Antigravity/03_哈基米记账插件_2a7e3170/Gemini-Hakimi-Widget/src/AntigravityMonitor.ps1)）**：
+    - 新增 `_call_ls_rpc` / `CallLanguageServerRpc` 与 `_parse_quota_summary_groups` / `ParseQuotaSummaryGroups`，在拉取 `GetUserStatus` 后联动查询 `RetrieveUserQuotaSummary`，同时填充每个模型的 `five_hour_*` 与 `weekly_*` 实时官方数据。
+    - 新增持久化配置项 `quota_view_mode`（`"5h"` / `"weekly"`），通过 `POST /api/config` 与 `GET /api/stats` 在内置面板与桌面宠物之间实时双向同步。
+  - **Sidecar 面板与桌宠详情窗切换开关（[`sidecars/hakimi_panel/ui.html`](file:///e:/Antigravity/03_哈基米记账插件_2a7e3170/Gemini-Hakimi-Widget/sidecars/hakimi_panel/ui.html)、[`src/HakimiWidget.ps1`](file:///e:/Antigravity/03_哈基米记账插件_2a7e3170/Gemini-Hakimi-Widget/src/HakimiWidget.ps1)）**：
+    - 在内置面板模型池卡片顶部新增 `⏱️ 5H 额度 | 📊 总额度` 分段切换按钮，并在每张模型卡片同时透传主进度条与另一周期的对比徽标（`总额 xx%` / `5H xx%`）。
+    - 在桌面宠物的自适应详情弹窗（`$detailWindow`）顶部与右键菜单同步加入 `5H额度 | 总额度` 切换按钮与菜单项。
+  - **桌宠气泡改版：上面 5H 额度，下面 总额度（[`src/WidgetWindow.xaml`](file:///e:/Antigravity/03_哈基米记账插件_2a7e3170/Gemini-Hakimi-Widget/src/WidgetWindow.xaml)、[`src/HakimiWidget.ps1`](file:///e:/Antigravity/03_哈基米记账插件_2a7e3170/Gemini-Hakimi-Widget/src/HakimiWidget.ps1)）**：
+    - 气泡标题动态显示当前所选模型所属配额池（`Gemini 共享池` / `Claude 独立池` + 模型胶囊），第一行固定展示当前池 **`5H 额度`**（绿色进度条 + 5h 重置倒计时），第二行固定展示当前池 **`总额度`**（蓝色进度条 + 周额度重置时间）。
+
+
 
 

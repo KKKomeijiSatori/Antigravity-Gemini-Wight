@@ -82,6 +82,7 @@ def get_config():
         "follow_antigravity": True,
         "hide_with_antigravity": True,
         "auto_launch_desktop_pet": False,
+        "quota_view_mode": "5h",
         "active_model": "gemini-4-hydrogen",
         "active_plan": "free",
         "antigravity_brain_path": BRAIN_DIR
@@ -90,6 +91,8 @@ def get_config():
     for k, v in default_cfg.items():
         if k not in cfg:
             cfg[k] = v
+    if cfg.get("quota_view_mode") not in ("5h", "weekly"):
+        cfg["quota_view_mode"] = "5h"
     return cfg
 
 
@@ -646,35 +649,44 @@ def _parse_env_ls_target():
     return (0, port, csrf, pref_scheme)
 
 
+def _call_ls_rpc(port, csrf, scheme, rpc_name, timeout=0.4):
+    url = f"{scheme}://127.0.0.1:{port}/exa.language_server_pb.LanguageServerService/{rpc_name}"
+    req = urllib.request.Request(
+        url,
+        data=b"{}",
+        headers={
+            "Content-Type": "application/json",
+            "Connect-Protocol-Version": "1",
+            "x-codeium-csrf-token": csrf,
+        },
+        method="POST",
+    )
+    opener = _DIRECT_HTTPS_OPENER if scheme == "https" else _DIRECT_HTTP_OPENER
+    with opener.open(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
 def _probe_ls_get_user_status(port, csrf, preferred_scheme=""):
     if not _is_loopback_port_open(port, timeout=0.08):
-        return None, ""
+        return None, None, ""
     schemes = [preferred_scheme] if preferred_scheme in ("https", "http") else []
     for s in ("https", "http"):
         if s not in schemes:
             schemes.append(s)
     for scheme in schemes:
-        url = f"{scheme}://127.0.0.1:{port}/exa.language_server_pb.LanguageServerService/GetUserStatus"
-        req = urllib.request.Request(
-            url,
-            data=b"{}",
-            headers={
-                "Content-Type": "application/json",
-                "Connect-Protocol-Version": "1",
-                "x-codeium-csrf-token": csrf,
-            },
-            method="POST",
-        )
         try:
-            opener = _DIRECT_HTTPS_OPENER if scheme == "https" else _DIRECT_HTTP_OPENER
-            with opener.open(req, timeout=0.4) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
+            data = _call_ls_rpc(port, csrf, scheme, "GetUserStatus", timeout=0.4)
             configs = data.get("userStatus", {}).get("cascadeModelConfigData", {}).get("clientModelConfigs", [])
             if configs:
-                return data, scheme
+                summary_data = None
+                try:
+                    summary_data = _call_ls_rpc(port, csrf, scheme, "RetrieveUserQuotaSummary", timeout=0.4)
+                except Exception:
+                    summary_data = None
+                return data, summary_data, scheme
         except Exception:
             continue
-    return None, ""
+    return None, None, ""
 
 
 def _discover_ls_candidates():
@@ -705,6 +717,80 @@ def _discover_ls_candidates():
     return found
 
 
+def _parse_reset_meta(rtime, now_utc, is_weekly_hint=None):
+    is_weekly = bool(is_weekly_hint) if is_weekly_hint is not None else False
+    reset_str = "实时同步"
+    countdown = ""
+    if rtime:
+        try:
+            rdt = datetime.fromisoformat(rtime.replace("Z", "+00:00"))
+            secs_left = (rdt - now_utc).total_seconds()
+            hours_left = secs_left / 3600.0
+            if is_weekly_hint is None:
+                is_weekly = (hours_left > 24.0)
+            local_dt = rdt.astimezone()
+            countdown = _format_countdown(secs_left)
+            if secs_left <= 0:
+                reset_str = "已就绪 · 随时重置"
+            elif is_weekly:
+                reset_str = f"重置 {local_dt.strftime('%m-%d %H:%M')} ({countdown})"
+            else:
+                reset_str = f"重置 {local_dt.strftime('%H:%M:%S')} ({countdown})"
+        except Exception:
+            pass
+    return is_weekly, reset_str, countdown
+
+
+def _parse_quota_summary_groups(summary_data, now_utc):
+    pool_summary = {}
+    if not isinstance(summary_data, dict):
+        return pool_summary
+    groups = summary_data.get("response", {}).get("groups", [])
+    if not isinstance(groups, list):
+        return pool_summary
+
+    for g in groups:
+        if not isinstance(g, dict):
+            continue
+        g_name = str(g.get("displayName") or "")
+        g_desc = str(g.get("description") or "")
+        buckets = g.get("buckets") or []
+        bucket_ids = " ".join(str(b.get("bucketId") or "") for b in buckets if isinstance(b, dict))
+        sig_text = f"{g_name} {g_desc} {bucket_ids}".lower()
+        pool_key = None
+        if "gemini" in sig_text:
+            pool_key = "gemini"
+        elif "claude" in sig_text or "3p" in sig_text or "gpt" in sig_text:
+            pool_key = "claude"
+        if not pool_key:
+            continue
+
+        parsed_windows = {}
+        for b in buckets:
+            if not isinstance(b, dict):
+                continue
+            win = str(b.get("window") or "").strip().lower()
+            bid = str(b.get("bucketId") or "").strip().lower()
+            if win == "weekly" or bid.endswith("-weekly"):
+                w_key = "weekly"
+            elif win == "5h" or bid.endswith("-5h"):
+                w_key = "5h"
+            else:
+                continue
+            frac = float(b["remainingFraction"]) if "remainingFraction" in b else (0.0 if "resetTime" in b else 1.0)
+            pct = max(0, min(100, int(round(frac * 100.0))))
+            rtime = str(b.get("resetTime") or "")
+            _, reset_str, countdown = _parse_reset_meta(rtime, now_utc, is_weekly_hint=(w_key == "weekly"))
+            parsed_windows[w_key] = {
+                "pct": pct,
+                "reset": reset_str,
+                "countdown": countdown,
+            }
+        if parsed_windows:
+            pool_summary[pool_key] = parsed_windows
+    return pool_summary
+
+
 def _parse_model_quota_entry(cfg_item, now_utc):
     disabled = bool(cfg_item.get("disabled"))
     tag_title = str(cfg_item.get("tagTitle") or "")
@@ -719,40 +805,65 @@ def _parse_model_quota_entry(cfg_item, now_utc):
             "reset": "暂不可用 · 需 Ultra",
             "countdown": "--",
             "tag_desc": tag_desc,
+            "five_hour_pct": 0,
+            "five_hour_reset": "暂不可用 · 需 Ultra",
+            "five_hour_countdown": "--",
+            "has_live_5h": False,
+            "weekly_pct": 0,
+            "weekly_reset": "需 Ultra 订阅",
+            "weekly_countdown": "--",
+            "has_live_weekly": False,
         }
 
     frac = float(qinfo["remainingFraction"]) if "remainingFraction" in qinfo else (0.0 if "resetTime" in qinfo else 1.0)
     pct = max(0, min(100, int(round(frac * 100.0))))
     rtime = str(qinfo.get("resetTime") or "")
-    is_weekly = False
-    reset_str = "实时同步"
-    countdown = ""
-    if rtime:
-        try:
-            rdt = datetime.fromisoformat(rtime.replace("Z", "+00:00"))
-            secs_left = (rdt - now_utc).total_seconds()
-            hours_left = secs_left / 3600.0
-            is_weekly = (hours_left > 24.0)
-            local_dt = rdt.astimezone()
-            countdown = _format_countdown(secs_left)
-            if secs_left <= 0:
-                reset_str = "已就绪 · 随时重置"
-            elif is_weekly:
-                reset_str = f"重置 {local_dt.strftime('%m-%d %H:%M')} ({countdown})"
-            else:
-                reset_str = f"重置 {local_dt.strftime('%H:%M:%S')} ({countdown})"
-        except Exception:
-            pass
+    is_weekly, reset_str, countdown = _parse_reset_meta(rtime, now_utc, is_weekly_hint=None)
 
     return {
         "disabled": disabled,
         "is_weekly": is_weekly,
         "pct": pct,
-        "window_label": "多日周期池" if is_weekly else "5h 周期池",
+        "window_label": "总额度 (周限)" if is_weekly else "5h 周期池",
         "reset": reset_str,
         "countdown": countdown,
         "tag_desc": tag_desc,
+        "five_hour_pct": pct,
+        "five_hour_reset": reset_str if not is_weekly else "实时同步",
+        "five_hour_countdown": countdown if not is_weekly else "",
+        "has_live_5h": not is_weekly,
+        "weekly_pct": pct,
+        "weekly_reset": reset_str if is_weekly else "实时同步",
+        "weekly_countdown": countdown if is_weekly else "",
+        "has_live_weekly": is_weekly,
     }
+
+
+def _apply_pool_summary_to_entry(entry, pool_windows):
+    if not entry or entry.get("disabled") or not pool_windows:
+        return entry
+    updated = dict(entry)
+    w5 = pool_windows.get("5h")
+    wk = pool_windows.get("weekly")
+    if w5:
+        updated["five_hour_pct"] = w5["pct"]
+        updated["five_hour_reset"] = w5["reset"]
+        updated["five_hour_countdown"] = w5["countdown"]
+        updated["has_live_5h"] = True
+        if not updated.get("is_weekly"):
+            updated["pct"] = w5["pct"]
+            updated["reset"] = w5["reset"]
+            updated["countdown"] = w5["countdown"]
+    if wk:
+        updated["weekly_pct"] = wk["pct"]
+        updated["weekly_reset"] = wk["reset"]
+        updated["weekly_countdown"] = wk["countdown"]
+        updated["has_live_weekly"] = True
+        if updated.get("is_weekly"):
+            updated["pct"] = wk["pct"]
+            updated["reset"] = wk["reset"]
+            updated["countdown"] = wk["countdown"]
+    return updated
 
 
 def _refresh_live_quotas_sync():
@@ -781,10 +892,11 @@ def _refresh_live_quotas_sync():
                     initial_targets.append(b_item)
 
     data = None
+    summary_data = None
     hit_pid, hit_port, hit_csrf, hit_scheme = 0, 0, "", ""
 
     for pid, port, csrf, pref_scheme in initial_targets:
-        data, hit_scheme = _probe_ls_get_user_status(port, csrf, pref_scheme)
+        data, summary_data, hit_scheme = _probe_ls_get_user_status(port, csrf, pref_scheme)
         if data:
             hit_pid, hit_port, hit_csrf = pid, port, csrf
             if env_target and port == env_target[1]:
@@ -797,7 +909,7 @@ def _refresh_live_quotas_sync():
             _LS_CACHE["csrf"] = ""
             _LS_CACHE["scheme"] = ""
         for pid, port, csrf in _discover_ls_candidates():
-            data, hit_scheme = _probe_ls_get_user_status(port, csrf)
+            data, summary_data, hit_scheme = _probe_ls_get_user_status(port, csrf)
             if data:
                 hit_pid, hit_port, hit_csrf = pid, port, csrf
                 save_json(bridge_path, {"scheme": hit_scheme, "port": hit_port, "csrf": hit_csrf, "pid": hit_pid})
@@ -815,6 +927,8 @@ def _refresh_live_quotas_sync():
     configs = user_status.get("cascadeModelConfigData", {}).get("clientModelConfigs", [])
     quotas = {}
     now_utc = datetime.now(timezone.utc)
+    pool_summary = _parse_quota_summary_groups(summary_data, now_utc)
+    pricing_models = get_pricing().get("models", {})
 
     for c in configs:
         label = str(c.get("label") or "")
@@ -824,6 +938,9 @@ def _refresh_live_quotas_sync():
         if not mkey:
             continue
         parsed = _parse_model_quota_entry(c, now_utc)
+        p_name = str(pricing_models.get(mkey, {}).get("quota_pool") or ("claude" if mkey.startswith("claude") else "gemini"))
+        if p_name in pool_summary:
+            parsed = _apply_pool_summary_to_entry(parsed, pool_summary[p_name])
         if mkey not in quotas or (not parsed["disabled"] and ("high" in mid.lower() or quotas[mkey]["disabled"])):
             quotas[mkey] = parsed
 
@@ -1381,6 +1498,7 @@ def _collect_stats_uncached(requested_conv_id=None):
     ]
 
     mult = float(limits_cfg.get("quota_multiplier", 5.0 if active_plan == "tier1" else 1.0))
+    quota_view_mode = "weekly" if cfg.get("quota_view_mode") == "weekly" else "5h"
 
     live_quotas = fetch_live_antigravity_quotas()
     model_quotas = []
@@ -1410,33 +1528,51 @@ def _collect_stats_uncached(requested_conv_id=None):
         r7_str = "本地估算 " + r7_dt.strftime("%m-%d %H:%M")
 
         disabled = False
-        is_weekly = False
-        pct = rem5
-        reset_str = r5_str
-        window_label = "本地估算 5h"
+        is_weekly = (quota_view_mode == "weekly")
+        pct = rem7 if is_weekly else rem5
+        reset_str = r7_str if is_weekly else r5_str
+        window_label = "本地估算周额" if is_weekly else "本地估算 5h"
 
         if mk in live_quotas:
             lq = live_quotas[mk]
             disabled = bool(lq.get("disabled"))
-            is_weekly = bool(lq.get("is_weekly"))
-            pct = int(lq.get("pct", 100))
-            reset_str = str(lq.get("reset", "实时同步"))
-            window_label = str(lq.get("window_label", "多日周期池" if is_weekly else "5h 周期池"))
+            lq_is_weekly = bool(lq.get("is_weekly"))
+            lq_pct = int(lq.get("pct", 100))
+            lq_reset = str(lq.get("reset", "实时同步"))
             if disabled:
                 rem5 = 0
                 rem7 = 0
-                r5_str = reset_str
+                r5_str = lq_reset
                 r7_str = "需 Ultra 订阅"
-            elif is_weekly:
-                rem7 = pct
-                r7_str = reset_str
-                rem5 = pct
-                r5_str = pool_label
+                pct = 0
+                reset_str = lq_reset
+                window_label = str(lq.get("window_label", "Unavailable"))
             else:
-                rem5 = pct
-                r5_str = reset_str
-                rem7 = pct
-                r7_str = pool_label
+                has_live_5h = bool(lq.get("has_live_5h"))
+                has_live_wk = bool(lq.get("has_live_weekly"))
+                if has_live_5h:
+                    rem5 = int(lq.get("five_hour_pct", lq_pct))
+                    r5_str = str(lq.get("five_hour_reset", lq_reset))
+                elif not lq_is_weekly:
+                    rem5 = lq_pct
+                    r5_str = lq_reset
+                if has_live_wk:
+                    rem7 = int(lq.get("weekly_pct", lq_pct))
+                    r7_str = str(lq.get("weekly_reset", lq_reset))
+                elif lq_is_weekly:
+                    rem7 = lq_pct
+                    r7_str = lq_reset
+
+                if quota_view_mode == "weekly":
+                    is_weekly = True
+                    pct = rem7
+                    reset_str = r7_str
+                    window_label = "总额度 (周限)" if (has_live_wk or lq_is_weekly) else "本地估算周额"
+                else:
+                    is_weekly = False
+                    pct = rem5
+                    reset_str = r5_str
+                    window_label = "5h 周期池" if (has_live_5h or not lq_is_weekly) else "本地估算 5h"
         elif disabled:
             rem5 = 0
             rem7 = 0
@@ -1479,24 +1615,30 @@ def _collect_stats_uncached(requested_conv_id=None):
     if companion_mq is None:
         companion_mq = next((x for x in model_quotas if x["quota_pool"] != active_pool and not x["disabled"]), active_mq)
 
-    active_row_label = (
-        "未解锁" if (active_mq and active_mq["disabled"])
-        else ("Claude 池" if active_pool == "claude" else "Gemini 池")
-    )
-    comp_pool = companion_mq["quota_pool"] if companion_mq else ("gemini" if active_pool == "claude" else "claude")
-    comp_short_label = "Claude 池" if comp_pool == "claude" else ("Gemini 池" if comp_pool in ("gemini", "flash_hydrogen") else (companion_mq["short_name"] if companion_mq else "Claude 池"))
-
+    active_disabled = bool(active_mq["disabled"]) if active_mq else False
     active_5h = {
-        "remaining_pct": active_mq["remaining_pct"] if active_mq else 100,
+        "remaining_pct": active_mq["five_hour_remaining_pct"] if active_mq else 100,
         "used_turns": active_mq["five_hour_used_turns"] if active_mq else 0,
         "limit_turns": active_mq["five_hour_limit_turns"] if active_mq else 1500,
-        "reset_display": active_mq["reset_display"] if active_mq else "实时同步",
-        "row_label": active_row_label,
+        "reset_display": active_mq["five_hour_reset"] if active_mq else "实时同步",
+        "row_label": "未解锁" if active_disabled else "5H 额度",
         "pool_label": active_mq["pool_label"] if active_mq else "Gemini 共享池",
-        "window_label": active_mq["window_label"] if active_mq else "5h 周期池",
-        "disabled": bool(active_mq["disabled"]) if active_mq else False,
+        "window_label": "5h 周期池",
+        "disabled": active_disabled,
     }
     active_7d = {
+        "remaining_pct": active_mq["weekly_remaining_pct"] if active_mq else 100,
+        "used_turns": active_mq["weekly_used_turns"] if active_mq else 0,
+        "limit_turns": active_mq["weekly_limit_turns"] if active_mq else 9000,
+        "reset_display": active_mq["weekly_reset"] if active_mq else "实时同步",
+        "short_label": "未解锁" if active_disabled else "总额度",
+        "pool_label": active_mq["pool_label"] if active_mq else "Gemini 共享池",
+        "window_label": "总额度 (周限)",
+        "disabled": active_disabled,
+    }
+    comp_pool = companion_mq["quota_pool"] if companion_mq else ("gemini" if active_pool == "claude" else "claude")
+    comp_short_label = "Claude 池" if comp_pool == "claude" else "Gemini 池"
+    comp_obj = {
         "remaining_pct": companion_mq["remaining_pct"] if companion_mq else 100,
         "used_turns": companion_mq["weekly_used_turns"] if companion_mq else 0,
         "limit_turns": companion_mq["weekly_limit_turns"] if companion_mq else 9000,
@@ -1508,7 +1650,7 @@ def _collect_stats_uncached(requested_conv_id=None):
     return {
         "five_hour": active_5h,
         "weekly": active_7d,
-        "companion_pool": active_7d,
+        "companion_pool": comp_obj,
         "live_plan_name": _LS_CACHE.get("plan_name", ""),
         "model_quotas": model_quotas,
         "ok": True,
@@ -1517,6 +1659,7 @@ def _collect_stats_uncached(requested_conv_id=None):
             "active_model_name": model_info.get("display_name", active_model),
             "invoked_model_id": last_step_invoked_id or active_model,
             "active_plan": active_plan,
+            "quota_view_mode": quota_view_mode,
             "sound_enabled": bool(cfg.get("sound_enabled", True)),
             "cache_sound_enabled": bool(cfg.get("cache_sound_enabled", False)),
             "speech_bubble_enabled": bool(cfg.get("speech_bubble_enabled", True)),
@@ -1690,9 +1833,12 @@ class HakimiSidecarHandler(BaseHTTPRequestHandler):
 
         if path == "/api/config":
             cfg = get_config()
-            for k in ("active_model", "active_plan", "sound_enabled", "cache_sound_enabled", "speech_bubble_enabled", "auto_launch_desktop_pet", "follow_antigravity", "hide_with_antigravity"):
+            for k in ("active_model", "active_plan", "quota_view_mode", "sound_enabled", "cache_sound_enabled", "speech_bubble_enabled", "auto_launch_desktop_pet", "follow_antigravity", "hide_with_antigravity"):
                 if k in payload:
-                    cfg[k] = payload[k]
+                    if k == "quota_view_mode":
+                        cfg[k] = "weekly" if payload[k] == "weekly" else "5h"
+                    else:
+                        cfg[k] = payload[k]
             save_json(CONFIG_PATH, cfg)
             with _STATS_LOCK:
                 _STATS_CACHE.clear()

@@ -476,6 +476,41 @@
       gap: 5px;
       cursor: pointer;
     }
+
+    /* Quota View Mode Segmented Switch (5H / 总额度) */
+    .quota-mode-switch {
+      display: inline-flex;
+      align-items: center;
+      background: var(--card-inner);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 2px;
+      gap: 2px;
+    }
+    .quota-mode-btn {
+      border: none;
+      background: transparent;
+      color: var(--text-sub);
+      font-size: 10.5px;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.16s ease;
+      white-space: nowrap;
+    }
+    .quota-mode-btn:hover {
+      color: var(--text);
+    }
+    .quota-mode-btn.active {
+      background: linear-gradient(135deg, rgba(16, 185, 129, 0.24), rgba(56, 189, 248, 0.22));
+      color: var(--emerald);
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+    }
+    .quota-mode-btn.active.weekly-mode {
+      background: linear-gradient(135deg, rgba(59, 130, 246, 0.26), rgba(168, 85, 247, 0.22));
+      color: var(--blue);
+    }
   </style>
 </head>
 <body>
@@ -533,9 +568,16 @@
 
   <!-- 0.5 Independent Pool Quotas + Per-Model Matrix -->
   <div class="card">
-    <div class="section-title">
-      <span>🐉 Gemini 共享池 &amp; Claude 独立池 (点击切换模型)</span>
-      <span id="txtActiveQuotaReset" style="font-size:10.5px;color:var(--blue)">实时池状态同步中</span>
+    <div class="section-title" style="margin-bottom:5px;">
+      <span>🐉 Gemini 共享池 &amp; Claude 独立池</span>
+      <div class="quota-mode-switch" id="quotaModeSwitch" title="切换显示 5H 周期额度或每周总额度">
+        <button type="button" class="quota-mode-btn active" id="btnMode5h" onclick="setQuotaViewMode('5h')">⏱️ 5H 额度</button>
+        <button type="button" class="quota-mode-btn" id="btnModeWeekly" onclick="setQuotaViewMode('weekly')">📊 总额度</button>
+      </div>
+    </div>
+    <div id="txtActiveQuotaReset" style="font-size:10.5px;color:var(--blue);margin-bottom:7px;display:flex;justify-content:space-between;align-items:center;gap:6px;">
+      <span>实时池状态同步中</span>
+      <span style="color:var(--text-sub);font-size:10px;">点击下方卡片切换模型</span>
     </div>
     <div id="modelQuotaList" style="display:flex;flex-direction:column;gap:6px;"></div>
   </div>
@@ -707,10 +749,12 @@
     let currentConfig = {
       active_model: 'gemini-3.8-flash',
       active_plan: 'free',
+      quota_view_mode: '5h',
       sound_enabled: true,
       speech_bubble_enabled: true,
       auto_launch_desktop_pet: false
     };
+    let lastStatsData = null;
     let lastSeenStepIndex = null;
     let blushTimeout = null;
 
@@ -832,7 +876,18 @@
     }
 
     function renderStats(data) {
+      lastStatsData = data;
       currentConfig = data.config || currentConfig;
+      const quotaMode = currentConfig.quota_view_mode === 'weekly' ? 'weekly' : '5h';
+
+      // Sync 5H / Total Quota Toggle Buttons
+      const btn5h = document.getElementById('btnMode5h');
+      const btnWk = document.getElementById('btnModeWeekly');
+      if (btn5h && btnWk) {
+        btn5h.classList.toggle('active', quotaMode === '5h');
+        btnWk.classList.toggle('active', quotaMode === 'weekly');
+        btnWk.classList.toggle('weekly-mode', quotaMode === 'weekly');
+      }
 
       // Populate Model Select
       const sel = document.getElementById('modelSelect');
@@ -882,8 +937,24 @@
       const mqList = document.getElementById('modelQuotaList');
       if (mqList && Array.isArray(data.model_quotas)) {
         const activeMq = data.model_quotas.find(x => x.is_active) || data.model_quotas[0];
-        if (activeMq) {
-          document.getElementById('txtActiveQuotaReset').innerText = `${activeMq.pool_label} · ${activeMq.reset_display}`;
+        const resetStrip = document.getElementById('txtActiveQuotaReset');
+        if (activeMq && resetStrip) {
+          const isWkMode = (quotaMode === 'weekly');
+          const actPct = activeMq.disabled
+            ? '未解锁'
+            : `${isWkMode ? (activeMq.weekly_remaining_pct ?? activeMq.remaining_pct) : (activeMq.five_hour_remaining_pct ?? activeMq.remaining_pct)}%`;
+          const actReset = isWkMode
+            ? (activeMq.weekly_reset || activeMq.reset_display || '')
+            : (activeMq.five_hour_reset || activeMq.reset_display || '');
+          const otherSummary = activeMq.disabled
+            ? ''
+            : (isWkMode
+              ? `5H: ${activeMq.five_hour_remaining_pct ?? 0}%`
+              : `总额度: ${activeMq.weekly_remaining_pct ?? 0}%`);
+          resetStrip.innerHTML = `
+            <span>${escapeHtml(activeMq.pool_label)} · ${isWkMode ? '总额度' : '5H 额度'} ${actPct} · ${escapeHtml(actReset)}</span>
+            <span style="color:var(--text-sub);font-size:10px;">${otherSummary ? `${otherSummary} · ` : ''}点击切换</span>
+          `;
         }
         const poolStyleMap = {
           gemini:         { bg: 'rgba(16,185,129,0.14)', border: 'rgba(16,185,129,0.35)', text: '#34d399' },
@@ -895,10 +966,14 @@
         };
         mqList.innerHTML = data.model_quotas.map(m => {
           const isDis = !!m.disabled;
-          const pct = Number(m.remaining_pct !== undefined ? m.remaining_pct : m.five_hour_remaining_pct || 0);
+          const isWkMode = (quotaMode === 'weekly');
+          const pct5h = Number(m.five_hour_remaining_pct !== undefined ? m.five_hour_remaining_pct : (m.remaining_pct || 0));
+          const pctWk = Number(m.weekly_remaining_pct !== undefined ? m.weekly_remaining_pct : (m.remaining_pct || 0));
+          const pct = isWkMode ? pctWk : pct5h;
+          const showWeeklyColor = isWkMode;
           const barColor = isDis
             ? 'rgba(148,163,184,0.35)'
-            : (pct <= 20 ? 'var(--rose)' : (pct <= 40 ? 'var(--amber)' : (m.is_weekly ? 'var(--blue)' : 'var(--emerald)')));
+            : (pct <= 20 ? 'var(--rose)' : (pct <= 40 ? 'var(--amber)' : (showWeeklyColor ? 'var(--blue)' : 'var(--emerald)')));
           const pStyle = isDis
             ? { bg: 'rgba(148,163,184,0.14)', border: 'rgba(148,163,184,0.30)', text: '#94a3b8' }
             : (poolStyleMap[m.quota_pool] || poolStyleMap.gemini);
@@ -906,7 +981,11 @@
             ? 'border:1px solid var(--blue);background:rgba(56,189,248,0.10);'
             : (isDis ? 'border:1px dashed var(--card-border);background:rgba(15,23,42,0.35);opacity:0.72;' : 'border:1px solid var(--card-border);background:var(--card-inner);');
           const badgeTxt = isDis ? '暂不可用 · Ultra' : (m.pool_label || '独立池');
-          const statusRight = m.reset_display || m.five_hour_reset || '';
+          const statusRight = isDis
+            ? (m.reset_display || '暂不可用')
+            : (isWkMode ? (m.weekly_reset || m.reset_display || '') : (m.five_hour_reset || m.reset_display || ''));
+          const winLbl = isDis ? (m.window_label || 'Unavailable') : (isWkMode ? '总额度 (周)' : '5h 周期池');
+          const altTag = isDis ? '' : (isWkMode ? `5H ${pct5h}%` : `总额 ${pctWk}%`);
           const valText = isDis ? '未解锁' : `${pct}%`;
           const barW = isDis ? 0 : pct;
           return `
@@ -920,12 +999,13 @@
                     ${badgeTxt}
                   </span>
                 </div>
-                <span style="font-size:10px;color:${isDis ? '#94a3b8' : 'var(--text-sub)'};white-space:nowrap;">${statusRight}</span>
+                <span style="font-size:10px;color:${isDis ? '#94a3b8' : 'var(--text-sub)'};white-space:nowrap;">${escapeHtml(statusRight)}</span>
               </div>
-              <div style="display:flex;align-items:center;gap:8px;">
-                <span style="font-size:10px;color:var(--text-sub);min-width:64px;white-space:nowrap;">${m.window_label || (m.is_weekly ? '多日周期池' : '5h 周期池')}</span>
+              <div style="display:flex;align-items:center;gap:7px;">
+                <span style="font-size:10px;color:var(--text-sub);min-width:58px;white-space:nowrap;">${winLbl}</span>
                 <div class="progress-track" style="flex:1;"><div class="progress-fill" style="width:${barW}%;background:${barColor};"></div></div>
-                <strong style="font-size:11px;min-width:36px;text-align:right;color:${isDis ? '#94a3b8' : barColor}">${valText}</strong>
+                ${altTag ? `<span style="font-size:9.5px;color:var(--text-muted);white-space:nowrap;">${altTag}</span>` : ''}
+                <strong style="font-size:11px;min-width:34px;text-align:right;color:${isDis ? '#94a3b8' : barColor}">${valText}</strong>
               </div>
             </div>
           `;
@@ -1030,6 +1110,19 @@
         const data = await res.json();
         if (data && data.ok) renderStats(data);
       } catch (e) {}
+    }
+
+    function setQuotaViewMode(mode) {
+      const nextMode = mode === 'weekly' ? 'weekly' : '5h';
+      playSound('pop');
+      currentConfig.quota_view_mode = nextMode;
+      if (lastStatsData) {
+        if (!lastStatsData.config) lastStatsData.config = {};
+        lastStatsData.config.quota_view_mode = nextMode;
+        renderStats(lastStatsData);
+      }
+      updateConfig({ quota_view_mode: nextMode });
+      setBubble(nextMode === 'weekly' ? '已切换为每周总额度显示喵～📊' : '已切换为 5H 周期额度显示喵～⏱️');
     }
 
     function onModelChange() {

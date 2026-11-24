@@ -14,6 +14,7 @@ class AntigravityMonitor {
     [hashtable]$Pricing
     [string]$ActiveModel
     [string]$ActivePlan
+    [string]$QuotaViewMode = "5h"
     [string]$LivePlanName = ""
     [string]$LastPbtxtModel = ""
     [string]$CurrentConvId = ""
@@ -78,7 +79,7 @@ class AntigravityMonitor {
         UsedPct = 0
         RemainingPct = 100
         ResetDisplay = "重置 --:--"
-        RowLabel = "Gemini 池"
+        RowLabel = "5H 额度"
         PoolLabel = "Gemini 共享池"
         WindowLabel = "5h 周期池"
         Disabled = $false
@@ -93,8 +94,10 @@ class AntigravityMonitor {
         UsedPct = 0
         RemainingPct = 100
         ResetDisplay = "重置 --:--"
-        ShortLabel = "Claude 池"
-        PoolLabel = "Claude 独立池"
+        ShortLabel = "总额度"
+        PoolLabel = "Gemini 共享池"
+        WindowLabel = "总额度 (周限)"
+        Disabled = $false
     }
 
     [System.Collections.Generic.List[hashtable]]$ModelQuotas = [System.Collections.Generic.List[hashtable]]::new()
@@ -216,6 +219,24 @@ class AntigravityMonitor {
         $this.ScanAllWindows()
     }
 
+    [void]SetQuotaViewMode([string]$mode) {
+        $this.QuotaViewMode = if ($mode -eq "weekly") { "weekly" } else { "5h" }
+        foreach ($mq in $this.ModelQuotas) {
+            if ($mq.Disabled) { continue }
+            if ($this.QuotaViewMode -eq "weekly") {
+                $mq.IsWeekly = $true
+                $mq.RemainingPct = [int]$mq.WeeklyRemainingPct
+                $mq.ResetDisplay = [string]$mq.WeeklyReset
+                $mq.WindowLabel = if ([string]$mq.WeeklyReset -like "本地估算*") { "本地估算周额" } else { "总额度 (周限)" }
+            } else {
+                $mq.IsWeekly = $false
+                $mq.RemainingPct = [int]$mq.FiveHourRemainingPct
+                $mq.ResetDisplay = [string]$mq.FiveHourReset
+                $mq.WindowLabel = if ([string]$mq.FiveHourReset -like "本地估算*") { "本地估算 5h" } else { "5h 周期池" }
+            }
+        }
+    }
+
     [void]UpdateModelLimits() {
         if (!$this.Pricing) { return }
         $m = $this.Pricing.models[$this.ActiveModel]
@@ -311,6 +332,34 @@ class AntigravityMonitor {
         }
     }
 
+    [object]CallLanguageServerRpc([int]$port, [string]$csrf, [string]$sch, [string]$rpcName) {
+        try {
+            $url = "${sch}://127.0.0.1:${port}/exa.language_server_pb.LanguageServerService/${rpcName}"
+            $req = [System.Net.HttpWebRequest]::Create($url)
+            $req.Proxy = $null
+            $req.Method = "POST"
+            $req.ContentType = "application/json"
+            $req.Timeout = 500
+            $req.ReadWriteTimeout = 500
+            $req.Headers.Add("Connect-Protocol-Version", "1")
+            $req.Headers.Add("x-codeium-csrf-token", $csrf)
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes("{}")
+            $req.ContentLength = $bytes.Length
+            $reqStream = $req.GetRequestStream()
+            $reqStream.Write($bytes, 0, $bytes.Length)
+            $reqStream.Close()
+            $resp = $req.GetResponse()
+            $reader = [System.IO.StreamReader]::new($resp.GetResponseStream(), [System.Text.Encoding]::UTF8)
+            $jsonStr = $reader.ReadToEnd()
+            $reader.Close()
+            $resp.Close()
+            if (![string]::IsNullOrWhiteSpace($jsonStr)) {
+                return ($jsonStr | ConvertFrom-Json)
+            }
+        } catch {}
+        return $null
+    }
+
     [hashtable]CallLanguageServerGetUserStatus([int]$port, [string]$csrf, [string]$preferredScheme) {
         if (!$this.TestLoopbackPort($port, 80)) { return $null }
         $schemes = @()
@@ -325,38 +374,103 @@ class AntigravityMonitor {
         try {
             [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { param($sender, $cert, $chain, $errors) return $true }
             foreach ($sch in $schemes) {
-                try {
-                    $url = "${sch}://127.0.0.1:${port}/exa.language_server_pb.LanguageServerService/GetUserStatus"
-                    $req = [System.Net.HttpWebRequest]::Create($url)
-                    $req.Proxy = $null
-                    $req.Method = "POST"
-                    $req.ContentType = "application/json"
-                    $req.Timeout = 500
-                    $req.ReadWriteTimeout = 500
-                    $req.Headers.Add("Connect-Protocol-Version", "1")
-                    $req.Headers.Add("x-codeium-csrf-token", $csrf)
-                    $bytes = [System.Text.Encoding]::UTF8.GetBytes("{}")
-                    $req.ContentLength = $bytes.Length
-                    $reqStream = $req.GetRequestStream()
-                    $reqStream.Write($bytes, 0, $bytes.Length)
-                    $reqStream.Close()
-                    $resp = $req.GetResponse()
-                    $reader = [System.IO.StreamReader]::new($resp.GetResponseStream(), [System.Text.Encoding]::UTF8)
-                    $jsonStr = $reader.ReadToEnd()
-                    $reader.Close()
-                    $resp.Close()
-                    if (![string]::IsNullOrWhiteSpace($jsonStr)) {
-                        $obj = ($jsonStr | ConvertFrom-Json)
-                        if ($null -ne $obj -and $null -ne $obj.userStatus) {
-                            return @{ Data = $obj; Scheme = $sch }
-                        }
-                    }
-                } catch {}
+                $obj = $this.CallLanguageServerRpc($port, $csrf, $sch, "GetUserStatus")
+                if ($null -ne $obj -and $null -ne $obj.userStatus) {
+                    $summaryObj = $this.CallLanguageServerRpc($port, $csrf, $sch, "RetrieveUserQuotaSummary")
+                    return @{ Data = $obj; SummaryData = $summaryObj; Scheme = $sch }
+                }
             }
         } finally {
             [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $prevCb
         }
         return $null
+    }
+
+    [hashtable]ParseResetMeta([string]$rtime, [datetime]$nowUtc, [Nullable[bool]]$isWeeklyHint) {
+        $resetUtc = $nowUtc.AddHours(5)
+        $hasReset = $false
+        $isWeekly = if ($null -ne $isWeeklyHint) { [bool]$isWeeklyHint } else { $false }
+        if (![string]::IsNullOrEmpty($rtime)) {
+            $parsedDt = $nowUtc
+            if ([datetime]::TryParse($rtime, [ref]$parsedDt)) {
+                $resetUtc = $parsedDt.ToUniversalTime()
+                $hasReset = $true
+            }
+        }
+        $secsLeft = ($resetUtc - $nowUtc).TotalSeconds
+        $hoursLeft = $secsLeft / 3600.0
+        if ($null -eq $isWeeklyHint -and $hoursLeft -gt 24.0) {
+            $isWeekly = $true
+        }
+        $localReset = $resetUtc.ToLocalTime()
+        $cd = $this.FormatCountdown($secsLeft)
+        $resetDisp = if (!$hasReset) {
+            "实时同步"
+        } elseif ($secsLeft -le 0) {
+            "已就绪 · 随时重置"
+        } elseif ($isWeekly) {
+            "重置 " + $localReset.ToString("MM-dd HH:mm") + " ($cd)"
+        } else {
+            "重置 " + $localReset.ToString("HH:mm:ss") + " ($cd)"
+        }
+        return @{
+            IsWeekly = $isWeekly
+            ResetDisplay = $resetDisp
+            HoursLeft = $hoursLeft
+            HasReset = $hasReset
+        }
+    }
+
+    [hashtable]ParseQuotaSummaryGroups($summaryObj, [datetime]$nowUtc) {
+        $poolSummary = @{}
+        if ($null -eq $summaryObj -or $null -eq $summaryObj.response -or $null -eq $summaryObj.response.groups) {
+            return $poolSummary
+        }
+        foreach ($g in $summaryObj.response.groups) {
+            $gName = [string]$g.displayName
+            $gDesc = [string]$g.description
+            $buckets = @($g.buckets)
+            $bIds = ($buckets | ForEach-Object { [string]$_.bucketId }) -join " "
+            $sig = "$gName $gDesc $bIds".ToLowerInvariant()
+            $poolKey = ""
+            if ($sig -match 'gemini') {
+                $poolKey = "gemini"
+            } elseif ($sig -match 'claude|3p|gpt') {
+                $poolKey = "claude"
+            }
+            if ([string]::IsNullOrEmpty($poolKey)) { continue }
+
+            $wins = @{}
+            foreach ($b in $buckets) {
+                $win = ([string]$b.window).Trim().ToLowerInvariant()
+                $bid = ([string]$b.bucketId).Trim().ToLowerInvariant()
+                $wKey = ""
+                if ($win -eq "weekly" -or $bid.EndsWith("-weekly")) {
+                    $wKey = "weekly"
+                } elseif ($win -eq "5h" -or $bid.EndsWith("-5h")) {
+                    $wKey = "5h"
+                } else {
+                    continue
+                }
+                $remPct = 100
+                $rtime = [string]$b.resetTime
+                if ($null -ne $b.remainingFraction) {
+                    $remPct = [int][Math]::Round([double]$b.remainingFraction * 100.0)
+                } elseif (![string]::IsNullOrEmpty($rtime)) {
+                    $remPct = 0
+                }
+                $remPct = [Math]::Min(100, [Math]::Max(0, $remPct))
+                $rm = $this.ParseResetMeta($rtime, $nowUtc, ($wKey -eq "weekly"))
+                $wins[$wKey] = @{
+                    Pct = $remPct
+                    ResetDisplay = $rm.ResetDisplay
+                }
+            }
+            if ($wins.Count -gt 0) {
+                $poolSummary[$poolKey] = $wins
+            }
+        }
+        return $poolSummary
     }
 
     [hashtable]FetchLiveAntigravityQuotas() {
@@ -448,6 +562,7 @@ class AntigravityMonitor {
                 $result.PlanName = [string]$respObj.userStatus.planStatus.planInfo.planName
             }
             $this.LivePlanName = $result.PlanName
+            $poolSummary = $this.ParseQuotaSummaryGroups($rpcHit.SummaryData, $nowUtc)
             $configs = $respObj.userStatus.cascadeModelConfigData.clientModelConfigs
             foreach ($cfg in $configs) {
                 $label = [string]$cfg.label
@@ -472,56 +587,77 @@ class AntigravityMonitor {
                         UsedPct = 100
                         WindowLabel = $(if ($tagTitle) { $tagTitle } else { "Unavailable" })
                         ResetDisplay = "暂不可用 · 需 Ultra"
+                        FiveHourRemainingPct = 0
+                        FiveHourReset = "暂不可用 · 需 Ultra"
+                        HasLive5h = $false
+                        WeeklyRemainingPct = 0
+                        WeeklyReset = "需 Ultra 订阅"
+                        HasLiveWeekly = $false
                     }
                     continue
                 }
 
                 $remPct = 100
-                $resetUtc = $nowUtc.AddHours(5)
-                $hasReset = $false
-                $isWeeklyWindow = $false
-
+                $rtime = ""
                 if ($null -ne $q) {
-                    if ($null -ne $q.resetTime -and ![string]::IsNullOrEmpty([string]$q.resetTime)) {
-                        $parsedDt = $nowUtc
-                        if ([datetime]::TryParse([string]$q.resetTime, [ref]$parsedDt)) {
-                            $resetUtc = $parsedDt.ToUniversalTime()
-                            $hasReset = $true
-                        }
-                    }
+                    if ($null -ne $q.resetTime) { $rtime = [string]$q.resetTime }
                     if ($null -ne $q.remainingFraction) {
                         $remPct = [int][Math]::Round([double]$q.remainingFraction * 100.0)
-                    } elseif ($hasReset) {
+                    } elseif (![string]::IsNullOrEmpty($rtime)) {
                         $remPct = 0
                     }
                 }
                 $remPct = [Math]::Min(100, [Math]::Max(0, $remPct))
-                $secsLeft = ($resetUtc - $nowUtc).TotalSeconds
-                $hoursLeft = $secsLeft / 3600.0
-                if ($hoursLeft -gt 24.0) {
-                    $isWeeklyWindow = $true
+                $rm = $this.ParseResetMeta($rtime, $nowUtc, $null)
+                $isWeeklyWindow = [bool]$rm.IsWeekly
+                $resetDisp = [string]$rm.ResetDisplay
+                $winLabel = if ($isWeeklyWindow) { "总额度 (周限)" } else { "5h 周期池" }
+
+                $rem5h = $remPct
+                $res5h = if (!$isWeeklyWindow) { $resetDisp } else { "实时同步" }
+                $hasLive5h = !$isWeeklyWindow
+                $remWk = $remPct
+                $resWk = if ($isWeeklyWindow) { $resetDisp } else { "实时同步" }
+                $hasLiveWk = $isWeeklyWindow
+
+                $pName = if ($this.Pricing -and $this.Pricing.models.ContainsKey($targetKey)) { [string]$this.Pricing.models[$targetKey].quota_pool } elseif ($targetKey -like "claude*") { "claude" } else { "gemini" }
+                if (!$isDisabled -and $poolSummary.ContainsKey($pName)) {
+                    $ps = $poolSummary[$pName]
+                    if ($ps.ContainsKey("5h")) {
+                        $rem5h = [int]$ps["5h"].Pct
+                        $res5h = [string]$ps["5h"].ResetDisplay
+                        $hasLive5h = $true
+                        if (!$isWeeklyWindow) {
+                            $remPct = $rem5h
+                            $resetDisp = $res5h
+                        }
+                    }
+                    if ($ps.ContainsKey("weekly")) {
+                        $remWk = [int]$ps["weekly"].Pct
+                        $resWk = [string]$ps["weekly"].ResetDisplay
+                        $hasLiveWk = $true
+                        if ($isWeeklyWindow) {
+                            $remPct = $remWk
+                            $resetDisp = $resWk
+                        }
+                    }
                 }
-                $localReset = $resetUtc.ToLocalTime()
-                $cd = $this.FormatCountdown($secsLeft)
-                $resetDisp = if ($secsLeft -le 0) {
-                    "已就绪 · 随时重置"
-                } elseif ($isWeeklyWindow) {
-                    "重置 " + $localReset.ToString("MM-dd HH:mm") + " ($cd)"
-                } else {
-                    "重置 " + $localReset.ToString("HH:mm:ss") + " ($cd)"
-                }
-                $winLabel = if ($isWeeklyWindow) { "多日周期池" } else { "5h 周期池" }
 
                 if (!$result.Models.ContainsKey($targetKey) -or (!$isDisabled -and ($mid -match '-high$' -or $result.Models[$targetKey].Disabled))) {
                     $result.Models[$targetKey] = @{
                         Disabled = $isDisabled
                         RemainingPct = $remPct
                         UsedPct = (100 - $remPct)
-                        ResetUtc = $resetUtc
                         ResetDisplay = $resetDisp
                         IsWeeklyWindow = $isWeeklyWindow
                         WindowLabel = $winLabel
-                        HoursLeft = $hoursLeft
+                        HoursLeft = $rm.HoursLeft
+                        FiveHourRemainingPct = $rem5h
+                        FiveHourReset = $res5h
+                        HasLive5h = $hasLive5h
+                        WeeklyRemainingPct = $remWk
+                        WeeklyReset = $resWk
+                        HasLiveWeekly = $hasLiveWk
                     }
                 }
             }
@@ -728,10 +864,12 @@ class AntigravityMonitor {
             $data = $jsonStr | ConvertFrom-Json
             if ($null -eq $data -or !$data.ok) { return $false }
 
-            # 0. Sync ActiveModel / Plan from Sidecar SSOT
+            # 0. Sync ActiveModel / Plan / QuotaViewMode from Sidecar SSOT
             if ($data.config) {
                 $scModel = [string]$data.config.active_model
                 $scPlan = [string]$data.config.active_plan
+                $scMode = if ([string]$data.config.quota_view_mode -eq "weekly") { "weekly" } else { "5h" }
+                $this.QuotaViewMode = $scMode
                 if (![string]::IsNullOrEmpty($scModel) -and $this.Pricing.models.ContainsKey($scModel) -and ($scModel -ne $this.ActiveModel -or (![string]::IsNullOrEmpty($scPlan) -and $scPlan -ne $this.ActivePlan))) {
                     $this.ActiveModel = $scModel
                     if (![string]::IsNullOrEmpty($scPlan)) { $this.ActivePlan = $scPlan }
@@ -800,21 +938,22 @@ class AntigravityMonitor {
                 $this.Today.SavingsUSD = [double]$td.savings_usd
             }
 
-            # 5. Sync FiveHour (Active Pool) & Weekly (Companion Pool)
+            # 5. Sync FiveHour & Weekly (5H 额度 & 总额度 for active pool)
             if ($data.five_hour) {
                 $this.FiveHour.RemainingPct = [int]$data.five_hour.remaining_pct
                 $this.FiveHour.ResetDisplay = [string]$data.five_hour.reset_display
                 $this.FiveHour.PoolLabel = if ($null -ne $data.five_hour.pool_label) { [string]$data.five_hour.pool_label } else { "Gemini 共享池" }
                 $this.FiveHour.WindowLabel = if ($null -ne $data.five_hour.window_label) { [string]$data.five_hour.window_label } else { "5h 周期池" }
                 $this.FiveHour.Disabled = ($null -ne $data.five_hour.disabled -and [bool]$data.five_hour.disabled)
-                $this.FiveHour.RowLabel = if ($null -ne $data.five_hour.row_label -and ![string]::IsNullOrEmpty([string]$data.five_hour.row_label)) { [string]$data.five_hour.row_label } elseif ($this.FiveHour.Disabled) { "未解锁" } elseif ($this.FiveHour.PoolLabel -like "Claude*") { "Claude 池" } else { "Gemini 池" }
+                $this.FiveHour.RowLabel = if ($null -ne $data.five_hour.row_label -and ![string]::IsNullOrEmpty([string]$data.five_hour.row_label)) { [string]$data.five_hour.row_label } elseif ($this.FiveHour.Disabled) { "未解锁" } else { "5H 额度" }
             }
-            $comp = if ($null -ne $data.companion_pool) { $data.companion_pool } else { $data.weekly }
-            if ($comp) {
-                $this.Weekly.RemainingPct = [int]$comp.remaining_pct
-                $this.Weekly.ResetDisplay = [string]$comp.reset_display
-                $this.Weekly.ShortLabel = if ($null -ne $comp.short_label -and ![string]::IsNullOrEmpty([string]$comp.short_label)) { [string]$comp.short_label } else { "Claude 池" }
-                $this.Weekly.PoolLabel = if ($null -ne $comp.pool_label) { [string]$comp.pool_label } else { "Claude 独立池" }
+            $wk = $data.weekly
+            if ($wk) {
+                $this.Weekly.RemainingPct = [int]$wk.remaining_pct
+                $this.Weekly.ResetDisplay = [string]$wk.reset_display
+                $this.Weekly.ShortLabel = if ($null -ne $wk.short_label -and ![string]::IsNullOrEmpty([string]$wk.short_label)) { [string]$wk.short_label } elseif ($this.Weekly.Disabled) { "未解锁" } else { "总额度" }
+                $this.Weekly.PoolLabel = if ($null -ne $wk.pool_label) { [string]$wk.pool_label } else { $this.FiveHour.PoolLabel }
+                $this.Weekly.Disabled = ($null -ne $wk.disabled -and [bool]$wk.disabled)
             }
 
             # 6. Sync ModelQuotas (Canonical Keys Matching HakimiWidget.ps1)
@@ -1180,24 +1319,47 @@ class AntigravityMonitor {
                 $res7d = "本地估算 " + $r7Dt.ToLocalTime().ToString("MM-dd HH:mm")
 
                 $isDis = $false
-                $isWeekly = $false
-                $pct = $rem5h
-                $resDisp = $res5h
-                $winLabel = "本地估算 5h"
+                $isWeekly = ($this.QuotaViewMode -eq "weekly")
+                $pct = if ($isWeekly) { $rem7d } else { $rem5h }
+                $resDisp = if ($isWeekly) { $res7d } else { $res5h }
+                $winLabel = if ($isWeekly) { "本地估算周额" } else { "本地估算 5h" }
 
                 if ($null -ne $live -and $live.Models.ContainsKey($mk)) {
                     $lq = $live.Models[$mk]
                     $isDis = [bool]$lq.Disabled
-                    $isWeekly = [bool]$lq.IsWeeklyWindow
-                    $pct = [int]$lq.RemainingPct
-                    $resDisp = [string]$lq.ResetDisplay
-                    $winLabel = [string]$lq.WindowLabel
+                    $lqIsWk = [bool]$lq.IsWeeklyWindow
+                    $lqPct = [int]$lq.RemainingPct
+                    $lqRes = [string]$lq.ResetDisplay
                     if ($isDis) {
-                        $rem5h = 0; $rem7d = 0; $res5h = $resDisp; $res7d = "需 Ultra 订阅"
-                    } elseif ($isWeekly) {
-                        $rem7d = $pct; $res7d = $resDisp; $rem5h = $pct; $res5h = $pLabel
+                        $rem5h = 0; $rem7d = 0; $res5h = $lqRes; $res7d = "需 Ultra 订阅"
+                        $pct = 0; $resDisp = $lqRes; $winLabel = [string]$lq.WindowLabel
                     } else {
-                        $rem5h = $pct; $res5h = $resDisp; $rem7d = $pct; $res7d = $pLabel
+                        $has5h = [bool]$lq.HasLive5h
+                        $hasWk = [bool]$lq.HasLiveWeekly
+                        if ($has5h) {
+                            $rem5h = [int]$lq.FiveHourRemainingPct
+                            $res5h = [string]$lq.FiveHourReset
+                        } elseif (!$lqIsWk) {
+                            $rem5h = $lqPct; $res5h = $lqRes
+                        }
+                        if ($hasWk) {
+                            $rem7d = [int]$lq.WeeklyRemainingPct
+                            $res7d = [string]$lq.WeeklyReset
+                        } elseif ($lqIsWk) {
+                            $rem7d = $lqPct; $res7d = $lqRes
+                        }
+
+                        if ($this.QuotaViewMode -eq "weekly") {
+                            $isWeekly = $true
+                            $pct = $rem7d
+                            $resDisp = $res7d
+                            $winLabel = if ($hasWk -or $lqIsWk) { "总额度 (周限)" } else { "本地估算周额" }
+                        } else {
+                            $isWeekly = $false
+                            $pct = $rem5h
+                            $resDisp = $res5h
+                            $winLabel = if ($has5h -or !$lqIsWk) { "5h 周期池" } else { "本地估算 5h" }
+                        }
                     }
                 } elseif ($isDis) {
                     $rem5h = 0; $rem7d = 0; $res5h = $resDisp; $res7d = "需 Ultra 订阅"
@@ -1242,33 +1404,22 @@ class AntigravityMonitor {
         if ($null -ne $activeMq) {
             $this.FiveHour.Turns = $activeMq.FiveHourUsedTurns
             $this.FiveHour.LimitTurns = $activeMq.FiveHourLimitTurns
-            $this.FiveHour.UsedPct = (100 - $activeMq.RemainingPct)
-            $this.FiveHour.RemainingPct = $activeMq.RemainingPct
-            $this.FiveHour.ResetDisplay = $activeMq.ResetDisplay
+            $this.FiveHour.UsedPct = (100 - $activeMq.FiveHourRemainingPct)
+            $this.FiveHour.RemainingPct = $activeMq.FiveHourRemainingPct
+            $this.FiveHour.ResetDisplay = $activeMq.FiveHourReset
             $this.FiveHour.PoolLabel = $activeMq.PoolLabel
-            $this.FiveHour.WindowLabel = $activeMq.WindowLabel
+            $this.FiveHour.WindowLabel = "5h 周期池"
             $this.FiveHour.Disabled = $activeMq.Disabled
-            $this.FiveHour.RowLabel = if ($activeMq.Disabled) { "未解锁" } elseif ($activeMq.QuotaPool -eq "claude") { "Claude 池" } else { "Gemini 池" }
+            $this.FiveHour.RowLabel = if ($activeMq.Disabled) { "未解锁" } else { "5H 额度" }
 
-            $compKey = if ($activeMq.QuotaPool -eq "claude") { "gemini-4-neon" } else { "claude-sonnet-5-5" }
-            $compMq = $null
-            foreach ($item in $this.ModelQuotas) {
-                if ($item.Key -eq $compKey -and !$item.Disabled) { $compMq = $item; break }
-            }
-            if ($null -eq $compMq) {
-                foreach ($item in $this.ModelQuotas) {
-                    if ($item.QuotaPool -ne $activeMq.QuotaPool -and !$item.Disabled) { $compMq = $item; break }
-                }
-            }
-            if ($null -eq $compMq) { $compMq = $activeMq }
-
-            $this.Weekly.Turns = $compMq.WeeklyUsedTurns
-            $this.Weekly.LimitTurns = $compMq.WeeklyLimitTurns
-            $this.Weekly.UsedPct = (100 - $compMq.RemainingPct)
-            $this.Weekly.RemainingPct = $compMq.RemainingPct
-            $this.Weekly.ResetDisplay = $compMq.ResetDisplay
-            $this.Weekly.ShortLabel = if ($compMq.QuotaPool -eq "claude") { "Claude 池" } else { "Gemini 池" }
-            $this.Weekly.PoolLabel = $compMq.PoolLabel
+            $this.Weekly.Turns = $activeMq.WeeklyUsedTurns
+            $this.Weekly.LimitTurns = $activeMq.WeeklyLimitTurns
+            $this.Weekly.UsedPct = (100 - $activeMq.WeeklyRemainingPct)
+            $this.Weekly.RemainingPct = $activeMq.WeeklyRemainingPct
+            $this.Weekly.ResetDisplay = $activeMq.WeeklyReset
+            $this.Weekly.ShortLabel = if ($activeMq.Disabled) { "未解锁" } else { "总额度" }
+            $this.Weekly.PoolLabel = $activeMq.PoolLabel
+            $this.Weekly.Disabled = $activeMq.Disabled
         }
     }
 

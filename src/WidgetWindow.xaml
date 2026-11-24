@@ -112,7 +112,7 @@
                                 <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
                                     <TextBlock Text="✦ " FontSize="11" FontWeight="Bold" Foreground="#A855F7" VerticalAlignment="Center"/>
                                     <TextBlock x:Name="HeaderTitle"
-                                               Text="Gemini 剩余额度"
+                                               Text="Gemini 共享池"
                                                FontFamily="Microsoft YaHei UI"
                                                FontSize="12"
                                                FontWeight="Bold"
@@ -141,7 +141,7 @@
                                 </Grid.ColumnDefinitions>
                                 <TextBlock x:Name="FiveHourLabel"
                                            Grid.Column="0"
-                                           Text="Gemini 池"
+                                           Text="5H 额度"
                                            FontFamily="Microsoft YaHei UI"
                                            FontSize="11"
                                            FontWeight="Bold"
@@ -187,7 +187,7 @@
                                 </Grid.ColumnDefinitions>
                                 <TextBlock x:Name="WeeklyLabel"
                                            Grid.Column="0"
-                                           Text="Claude 池"
+                                           Text="总额度"
                                            FontFamily="Microsoft YaHei UI"
                                            FontSize="11"
                                            FontWeight="Bold"
